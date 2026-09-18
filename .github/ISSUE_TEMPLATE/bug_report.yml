@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a reproducible defect.
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Do not include credentials, private source code, or audit records.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide minimal, redacted steps and expected behavior.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Glasir Control version
+    validations:
+      required: true

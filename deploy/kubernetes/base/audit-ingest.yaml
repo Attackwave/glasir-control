@@ -1,0 +1,55 @@
+# Dedicated central audit ingest. Back its PVC with encrypted immutable/WORM
+# storage and restrict ingress to control-plane workloads at the CNI layer.
+apiVersion: v1
+kind: Secret
+metadata: { name: glasir-audit-ingest, namespace: glasir }
+type: Opaque
+stringData: { ingest.key: CHANGE-ME-AT-LEAST-32-RANDOM-BYTES }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: glasir-audit-ingest, namespace: glasir, labels: { app.kubernetes.io/name: glasir-audit-ingest } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app.kubernetes.io/name: glasir-audit-ingest } }
+  template:
+    metadata: { labels: { app.kubernetes.io/name: glasir-audit-ingest } }
+    spec:
+      # fsGroup makes the persistent volume writable to the immutable image's
+      # non-root UID without loosening the container security context.
+      securityContext: { seccompProfile: { type: RuntimeDefault }, fsGroup: 65532, fsGroupChangePolicy: OnRootMismatch }
+      containers:
+        - name: ingest
+          image: ghcr.io/glasir/glasir-control:CHANGE-ME
+          args: [--audit-ingest, 0.0.0.0:8443, --audit-ingest-store, /var/lib/glasir/events.jsonl, --audit-ingest-key-file, /run/ingest/ingest.key, --audit-ingest-tls-ca, /run/mtls/ca.crt, --audit-ingest-tls-cert, /run/mtls/audit.crt, --audit-ingest-tls-key, /run/mtls/audit.key]
+          ports: [{ name: ingest, containerPort: 8443 }]
+          readinessProbe: { tcpSocket: { port: ingest }, initialDelaySeconds: 2, periodSeconds: 5 }
+          livenessProbe: { tcpSocket: { port: ingest }, initialDelaySeconds: 5, periodSeconds: 10 }
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: "1", memory: 256Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, runAsUser: 65532, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: ingest-key, mountPath: /run/ingest, readOnly: true }, { name: mtls, mountPath: /run/mtls, readOnly: true }, { name: audit, mountPath: /var/lib/glasir }]
+      volumes:
+        - { name: ingest-key, secret: { secretName: glasir-audit-ingest } }
+        - { name: mtls, projected: { sources: [{ secret: { name: glasir-core-mtls, items: [{ key: ca.crt, path: ca.crt }] } }, { secret: { name: glasir-audit-mtls } }] } }
+        - { name: audit, persistentVolumeClaim: { claimName: glasir-audit-ingest } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: glasir-audit-ingest, namespace: glasir }
+spec: { selector: { app.kubernetes.io/name: glasir-audit-ingest }, ports: [{ name: ingest, port: 8443, targetPort: ingest }] }
+---
+# The HMAC authenticates every event; this policy additionally prevents other
+# namespace workloads from opening an ingest connection. Put a mesh/sidecar
+# with mutual TLS in front of this service for cross-cluster or multi-region
+# transport.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: glasir-audit-ingest, namespace: glasir }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: glasir-audit-ingest } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: glasir-control } }
+      ports: [{ protocol: TCP, port: 8443 }]
+  egress: []

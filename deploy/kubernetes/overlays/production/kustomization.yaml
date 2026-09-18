@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Copy this overlay into the deployment repository and set immutable image
+# digests and External-Secret resources there; no private material belongs here.
+resources:
+  - ../../base
+images:
+  - name: ghcr.io/glasir/glasir-control
+    newName: ghcr.io/glasir/glasir-control
+    newTag: CHANGE-ME-IMMUTABLE-DIGEST

@@ -1,0 +1,223 @@
+# Replace every CHANGE-ME value. rights.tsv includes per-Core service tokens,
+# therefore it is a Secret, not a ConfigMap.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: glasir
+  labels:
+    # Label the namespace running the ingress controller with this value too.
+    glasir.io/ingress: "true"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: glasir-control
+  namespace: glasir
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: glasir-control-policy
+  namespace: glasir
+type: Opaque
+stringData:
+  # Never commit production values. Use External Secrets, SOPS, or your secret
+  # manager to create this object instead.
+  rights.tsv: |
+    # The address is the Core Service DNS name and its private TLS port.
+    # Its certificate SAN must contain this exact hostname.
+    tree	alpha	glasir-core-alpha.glasir.svc.cluster.local:7001	CHANGE-ME
+    role	developer	alpha
+  users.tokens: |
+    # sha256\tuser\texpiry
+  audit.key: CHANGE-ME-AT-LEAST-32-RANDOM-BYTES
+  # Must equal glasir-audit-ingest/ingest.key. Rotate both values together.
+  audit.remote.key: CHANGE-ME-AT-LEAST-32-RANDOM-BYTES
+---
+# Create through External Secrets/SOPS in production. `ca.crt` signs the Core
+# server and control-plane client certificates; never use the public ingress
+# certificate here.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: glasir-core-mtls
+  namespace: glasir
+type: Opaque
+stringData:
+  ca.crt: CHANGE-ME-PRIVATE-CA
+  control.crt: CHANGE-ME-CLIENT-CERTIFICATE
+  control.key: CHANGE-ME-CLIENT-KEY
+---
+# Its certificate SAN must include
+# glasir-audit-ingest.glasir.svc.cluster.local. The client certificate is the
+# same control-plane identity already trusted by the private CA above.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: glasir-audit-mtls
+  namespace: glasir
+type: Opaque
+stringData:
+  audit.crt: CHANGE-ME-AUDIT-INGEST-SERVER-CERTIFICATE
+  audit.key: CHANGE-ME-AUDIT-INGEST-SERVER-KEY
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: glasir-control-proxy
+  namespace: glasir
+data:
+  default.conf: |
+    server {
+      listen 8080;
+      location / {
+        proxy_pass http://127.0.0.1:8800;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_http_version 1.1;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: glasir-control
+  namespace: glasir
+  labels:
+    app.kubernetes.io/name: glasir-control
+spec:
+  replicas: 2
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: glasir-control
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: glasir-control
+    spec:
+      serviceAccountName: glasir-control
+      securityContext:
+        # Makes writable emptyDir volumes usable by the non-root proxy and
+        # control processes without loosening either container's UID policy.
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: control
+          image: ghcr.io/glasir/glasir-control:CHANGE-ME
+          imagePullPolicy: IfNotPresent
+          args: [--listen, 127.0.0.1:8800, --rights, /run/glasir/rights.tsv, --tokens, /run/glasir/users.tokens, --audit, /var/log/glasir/audit.jsonl, --audit-key-file, /run/glasir/audit.key, --audit-remote-url, https://glasir-audit-ingest.glasir.svc.cluster.local:8443/v1/events, --audit-remote-key-file, /run/glasir/audit.remote.key, --audit-remote-tls-ca, /run/mtls/ca.crt, --audit-remote-tls-cert, /run/mtls/control.crt, --audit-remote-tls-key, /run/mtls/control.key, --backend-tls-ca, /run/mtls/ca.crt, --backend-tls-cert, /run/mtls/control.crt, --backend-tls-key, /run/mtls/control.key]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          volumeMounts:
+            - { name: policy, mountPath: /run/glasir, readOnly: true }
+            - { name: mtls, mountPath: /run/mtls, readOnly: true }
+            - { name: audit, mountPath: /var/log/glasir }
+            - { name: tmp, mountPath: /tmp }
+        - name: proxy
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 101
+            runAsGroup: 101
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { cpu: 250m, memory: 128Mi }
+          volumeMounts:
+            - { name: proxy-config, mountPath: /etc/nginx/conf.d, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: policy, secret: { secretName: glasir-control-policy } }
+        - { name: mtls, secret: { secretName: glasir-core-mtls } }
+        # Do not use emptyDir for a production audit trail. This reference
+        # deliberately refuses to pretend a pod-local log is durable: replace
+        # it with encrypted, append-only storage or the audited log pipeline.
+        - { name: audit, persistentVolumeClaim: { claimName: glasir-audit } }
+        - { name: tmp, emptyDir: {} }
+        - { name: proxy-config, configMap: { name: glasir-control-proxy } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: glasir-control
+  namespace: glasir
+spec:
+  selector:
+    app.kubernetes.io/name: glasir-control
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: glasir-control
+  namespace: glasir
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: glasir-control
+---
+# NetworkPolicy APIs cannot safely express an external FQDN allowlist. The
+# HTTPS exception is only needed when code-host reconciliation is enabled; use
+# your CNI's FQDN policy capability to replace it with GitHub/GitLab hosts.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: glasir-control
+  namespace: glasir
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: glasir-control
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { glasir.io/ingress: "true" }
+      ports:
+        - { protocol: TCP, port: 8080 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/component: glasir-core }
+      ports:
+        - { protocol: TCP, port: 7001 }
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: glasir-audit-ingest }
+      ports:
+        - { protocol: TCP, port: 8443 }
+    - to:
+        - ipBlock: { cidr: 0.0.0.0/0 }
+      ports:
+        - { protocol: TCP, port: 443 }

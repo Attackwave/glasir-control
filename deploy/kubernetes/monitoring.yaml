@@ -1,0 +1,34 @@
+# Requires the Prometheus Operator CRDs; keep it separate if that operator is
+# not installed in the target cluster.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: glasir-control
+  namespace: glasir
+  labels:
+    app.kubernetes.io/name: glasir-control
+spec:
+  groups:
+    - name: glasir-control
+      rules:
+        - alert: GlasirControlUnavailable
+          expr: up{job="glasir-control"} == 0
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: Glasir control plane has no reachable replica
+            runbook_url: https://github.com/glasir/glasir-be/blob/main/deploy/README.md#incident-runbook
+        - alert: GlasirAuditRecordsDropped
+          expr: increase(glasir_control_audit_dropped_total[5m]) > 0
+          for: 1m
+          labels: { severity: warning }
+          annotations:
+            summary: Glasir control plane is dropping audit records
+            runbook_url: https://github.com/glasir/glasir-be/blob/main/deploy/README.md#incident-runbook
+        - alert: GlasirRemoteAuditExportFailed
+          expr: increase(glasir_control_audit_remote_failed_total[5m]) > 0
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: Glasir cannot export audit evidence to the central ingest
+            runbook_url: https://github.com/glasir/glasir-be/blob/main/deploy/README.md#incident-runbook
