@@ -121,6 +121,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          # docker/build-push-action uploads an implementation-specific build
+          # record as an artifact. It is not a release asset and cannot be
+          # extracted by download-artifact on every runner.
+          pattern: "!*.dockerbuild"
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*
