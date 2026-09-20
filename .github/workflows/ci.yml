@@ -35,6 +35,17 @@ jobs:
         run: cargo build --release --locked
       - name: mTLS audit transport integration
         run: bash scripts/test-audit-mtls.sh
+      # Test the independently released data plane too. The boundary is where
+      # bearer-token substitution and mutual TLS must work together.
+      - uses: actions/checkout@v4
+        with:
+          repository: Attackwave/glasir
+          ref: main
+          path: glasir-core
+      - name: build Core integration binary
+        run: cargo build --release --locked --manifest-path glasir-core/Cargo.toml --target-dir target/core-integration
+      - name: Core-Control mTLS forwarding integration
+        run: GLASIR_CORE_BIN="$GITHUB_WORKSPACE/target/core-integration/release/glasir" bash scripts/test-core-control-mtls.sh
 
   container:
     runs-on: ubuntu-latest
