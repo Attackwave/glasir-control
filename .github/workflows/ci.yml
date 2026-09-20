@@ -33,6 +33,14 @@ jobs:
         run: cargo test --locked
       - name: locked release build
         run: cargo build --release --locked
+      # The release workflow publishes a manifest after the platform images.
+      # Its provenance and signature must bind that manifest, not the removed
+      # single-platform build step.
+      - name: verify release manifest provenance wiring
+        run: |
+          grep -F 'subject-digest:' .github/workflows/release.yml | grep -F 'steps.manifest.outputs.digest'
+          grep -F 'DIGEST:' .github/workflows/release.yml | grep -F 'steps.manifest.outputs.digest'
+          ! grep -F 'steps.push.outputs.digest' .github/workflows/release.yml
       - name: mTLS audit transport integration
         run: bash scripts/test-audit-mtls.sh
       # Test the independently released data plane too. The boundary is where

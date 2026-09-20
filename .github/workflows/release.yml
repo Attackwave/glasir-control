@@ -151,13 +151,13 @@ jobs:
       - uses: actions/attest-build-provenance@v2
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/glasir-control
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
           push-to-registry: true
       - uses: sigstore/cosign-installer@v3
       - name: keyless sign image digest
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
-          DIGEST: ${{ steps.push.outputs.digest }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
         run: for tag in $TAGS; do cosign sign --yes "${tag}@${DIGEST}"; done
 
   publish:
