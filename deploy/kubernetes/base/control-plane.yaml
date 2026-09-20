@@ -107,7 +107,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: control
-          image: ghcr.io/glasir/glasir-control:CHANGE-ME
+          image: ghcr.io/attackwave/glasir-control:CHANGE-ME
           imagePullPolicy: IfNotPresent
           args: [--listen, 127.0.0.1:8800, --rights, /run/glasir/rights.tsv, --tokens, /run/glasir/users.tokens, --audit, /var/log/glasir/audit.jsonl, --audit-key-file, /run/glasir/audit.key, --audit-remote-url, https://glasir-audit-ingest.glasir.svc.cluster.local:8443/v1/events, --audit-remote-key-file, /run/glasir/audit.remote.key, --audit-remote-tls-ca, /run/mtls/ca.crt, --audit-remote-tls-cert, /run/mtls/control.crt, --audit-remote-tls-key, /run/mtls/control.key, --backend-tls-ca, /run/mtls/ca.crt, --backend-tls-cert, /run/mtls/control.crt, --backend-tls-key, /run/mtls/control.key]
           securityContext:

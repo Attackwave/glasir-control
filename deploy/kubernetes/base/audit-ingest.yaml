@@ -20,7 +20,7 @@ spec:
       securityContext: { seccompProfile: { type: RuntimeDefault }, fsGroup: 65532, fsGroupChangePolicy: OnRootMismatch }
       containers:
         - name: ingest
-          image: ghcr.io/glasir/glasir-control:CHANGE-ME
+          image: ghcr.io/attackwave/glasir-control:CHANGE-ME
           args: [--audit-ingest, 0.0.0.0:8443, --audit-ingest-store, /var/lib/glasir/events.jsonl, --audit-ingest-key-file, /run/ingest/ingest.key, --audit-ingest-tls-ca, /run/mtls/ca.crt, --audit-ingest-tls-cert, /run/mtls/audit.crt, --audit-ingest-tls-key, /run/mtls/audit.key]
           ports: [{ name: ingest, containerPort: 8443 }]
           readinessProbe: { tcpSocket: { port: ingest }, initialDelaySeconds: 2, periodSeconds: 5 }
