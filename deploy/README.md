@@ -96,5 +96,5 @@ admission:
 ```sh
 bash scripts/verify-image.sh \
   ghcr.io/ORG/glasir-control@sha256:REPLACE \
-  ORG/glasir-be
+  Attackwave/glasir-control
 ```

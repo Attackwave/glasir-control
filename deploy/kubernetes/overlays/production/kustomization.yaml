@@ -5,6 +5,6 @@ kind: Kustomization
 resources:
   - ../../base
 images:
-  - name: ghcr.io/glasir/glasir-control
-    newName: ghcr.io/glasir/glasir-control
+  - name: ghcr.io/attackwave/glasir-control
+    newName: ghcr.io/attackwave/glasir-control
     newTag: CHANGE-ME-IMMUTABLE-DIGEST
