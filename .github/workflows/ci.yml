@@ -38,9 +38,9 @@ jobs:
       # single-platform build step.
       - name: verify release manifest provenance wiring
         run: |
-          rg -F 'subject-digest:' .github/workflows/release.yml | rg -F 'steps.manifest.outputs.digest'
-          rg -F 'DIGEST:' .github/workflows/release.yml | rg -F 'steps.manifest.outputs.digest'
-          ! rg -F 'steps.push.outputs.digest' .github/workflows/release.yml
+          grep -F 'subject-digest:' .github/workflows/release.yml | grep -F 'steps.manifest.outputs.digest'
+          grep -F 'DIGEST:' .github/workflows/release.yml | grep -F 'steps.manifest.outputs.digest'
+          ! grep -F 'steps.push.outputs.digest' .github/workflows/release.yml
       - name: mTLS audit transport integration
         run: bash scripts/test-audit-mtls.sh
       # Test the independently released data plane too. The boundary is where
