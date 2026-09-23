@@ -94,7 +94,11 @@ mutable tag. Verify the keyless Cosign signature and SLSA provenance before
 admission:
 
 ```sh
+DIGEST='sha256:published-image-digest'
 bash scripts/verify-image.sh \
-  ghcr.io/ORG/glasir-control@sha256:REPLACE \
+  "ghcr.io/attackwave/glasir-control@$DIGEST" \
   Attackwave/glasir-control
 ```
+
+Obtain `DIGEST` from the published release or registry manifest. Do not replace
+it with a mutable tag while verifying provenance or admitting an image.

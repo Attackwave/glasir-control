@@ -19,6 +19,23 @@ A client reaches a tree at `/mcp/<name>` with its own credential. Everything
 else about Glasir is unchanged — this service knows where a tree is and who may
 see it, never what is in it.
 
+## Product boundary
+
+| Capability | Core | Control |
+|---|---|---|
+| Index and query one source tree | Yes | Routes to the responsible Core |
+| Public identity and repository authorization | No | Yes |
+| Policy review and access certification | No | Yes |
+| Cross-repository review workspace | No | Yes, for explicitly authorized trees |
+| Central audit export and operational endpoints | Local only | Yes |
+
+This division is deliberate. A Core process never receives an unauthorised
+public request; Control authenticates, authorises, and forwards only the
+isolated backend credential for the selected tree.
+
+[Operations and data boundaries](docs/operations.md) describes retained state,
+recovery expectations, and the deployment contract.
+
 ## Separation is a process boundary
 
 A tree a caller may not reach is never spoken to. There is no code path on
@@ -92,10 +109,10 @@ group     security     auditor
 glasir-control --oidc-groups-claim groups ...
 ```
 
-A versioned file rather than a database, deliberately: git already records who
-changed a right and when, which is the audit trail an admin view would
-otherwise have to build. When rights are mirrored from a code host, this
-becomes what mirroring writes into.
+A versioned file rather than a database is deliberate: when the policy is kept
+in version control, its review history records who changed a right and when.
+That history complements, rather than replaces, the runtime audit trail. When
+rights are mirrored from a code host, this is the file mirroring updates.
 
 For periodic access certification, export the evaluated policy structure
 without backend credentials or tokens:
@@ -157,7 +174,7 @@ Verify configuration syntax, duplicate entries, socket addresses, and dangling g
 glasir-control --validate --rights rights.tsv --tokens users.tokens
 ```
 
-## Code-Host Permission Synchronization (Stage 5)
+## Code-host permission synchronization
 
 Permissions are **mirrored from code hosts** (GitHub, GitLab), ensuring repository access policies remain authoritative:
 
@@ -178,6 +195,26 @@ Permissions are **mirrored from code hosts** (GitHub, GitLab), ensuring reposito
 - **Tamper-evident audit chain**: Supply `--audit-key-file /run/secrets/glasir-audit.key` (at least 32 random bytes) to HMAC-sign every record and link it to its predecessor. Verify the current log plus its retained rotation with `glasir-control --verify-audit audit.jsonl --audit-key-file /run/secrets/glasir-audit.key`. Store the key separately from the log; an unsigned legacy log cannot be verified retroactively.
 - **Health, Readiness and Metrics**: `GET /health` reports liveness; `GET /ready` fails closed if the identity source, configured trees, or a permission-mirror lease is unusable; `GET /metrics` exposes bounded-cardinality Prometheus gauges and counters. These endpoints are only reachable on the control plane's loopback listener or through the operator's proxy boundary.
 - **Bearer-token mode**: responds with an RFC 6750 challenge. OAuth/OIDC resource-server mode is intentionally not claimed until an issuer and audience validation are configured.
+
+## Review and administration
+
+Control exposes an authenticated browser review console at `GET /review`. The
+console keeps the entered bearer token in browser memory and calls the same
+administrative API used by automation. It can retrieve the secret-free access
+review, inspect the recent audit timeline, and create or approve policy
+proposals.
+
+For cross-repository work, `GET /workspaces` lists only workspaces for which
+the caller can access every participating tree. `POST /api/review/impact`
+produces a bounded diff-impact review for an authorised workspace, and
+`GET /api/workspaces/<name>/evidence` returns its declared contract evidence.
+These endpoints do not grant access to an individual repository merely because
+its name appears in a workspace.
+
+The policy file remains the source of truth. Treat review-console proposals as
+an approval workflow around a versioned policy change: review the resulting
+rights change, retain the approval evidence, and use the normal deployment
+process to promote it.
 
 ## Endpoints
 
@@ -222,9 +259,16 @@ keep the public edge TLS separate from this private hop.
 
 ```bash
 cargo build --release
-cargo test            # 20 unit tests, 0 dependencies
-./check.sh            # E2E acceptance test suite against real processes
+cargo test --locked
+bash scripts/test-audit-mtls.sh
+bash scripts/test-core-control-mtls.sh
 ```
+
+Release pipelines build platform archives, publish a multi-architecture image,
+attach a CycloneDX SBOM, create provenance, and sign the published manifest
+with keyless Cosign. Verify a release by immutable digest as described in
+[the deployment reference](deploy/README.md#release-verification); never treat
+a mutable tag as admission evidence.
 
 ## Licence
 
