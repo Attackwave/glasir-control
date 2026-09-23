@@ -1,6 +1,11 @@
 Glasir Control
 Copyright 2026 Attackwave
 
-This product includes software developed by third parties under the licenses
-recorded in Cargo.lock. Release artifacts include a generated SBOM for
-dependency review.
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Release archives include the binary's third-party components and their
+licence texts in THIRD-PARTY-LICENSES.txt, generated from the tagged
+Cargo.lock by cargo-about. Every one of them is under a permissive licence
+(MIT, Apache-2.0, ISC, BSD-3-Clause, Unicode-3.0, Unlicense or
+CDLA-Permissive-2.0); about.toml lists what is accepted, and the release fails
+on anything else. Each release also carries a CycloneDX SBOM.

@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
+description = "Policy, routing and audit boundary in front of Glasir Core"
+repository = "https://github.com/Attackwave/glasir-control"
+publish = false
 
 [dependencies]
 jsonwebtoken = "9.3.1"
