@@ -17,8 +17,11 @@ jobs:
     strategy:
       matrix:
         include:
+          # musl, statically linked: a glibc build from the newest runner needs
+          # that runner's glibc (2.39) and did not start on Ubuntu 22.04 or
+          # RHEL 9. Measured with the Core, the same fix applies here.
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             platform: linux-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -29,7 +32,7 @@ jobs:
           # Native, like the container images: ARM Linux is Graviton and
           # Ampere servers, and cross-compiled binaries would ship untested.
           - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
             platform: linux-arm64
           # The last Intel image GitHub offers; it is retired in August 2027,
           # after which this entry has to cross-compile from Apple Silicon.
@@ -51,6 +54,10 @@ jobs:
           cargo build --release --locked
           cargo install cargo-audit --locked
           cargo audit
+      - name: musl toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: install cargo-about
         run: cargo install cargo-about --locked --features cli
 
