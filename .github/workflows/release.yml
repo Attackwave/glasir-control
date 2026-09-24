@@ -4,7 +4,7 @@ name: release
 
 on:
   push:
-    tags: ["control-v*"]
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -67,7 +67,7 @@ jobs:
           cargo build --release --locked --target ${{ matrix.target }}
           BIN=target/${{ matrix.target }}/release/glasir-control
           [ -f "$BIN.exe" ] && BIN="$BIN.exe"
-          # Tags carry a prefix (`v`, `control-v`); the archive names the product
+          # Tags carry a `v` (older candidates `control-v`); the archive names the product
           # once and the platform the way a user would look for it.
           VERSION="${GITHUB_REF_NAME#control-}"
           VERSION="${VERSION#v}"
