@@ -89,7 +89,7 @@ image digests and secret-manager resources are set. Apply
 
 ## Release verification
 
-After a `control-v*` tag is published, deploy an immutable digest, never a
+After a `v*` tag is published, deploy an immutable digest, never a
 mutable tag. Verify the keyless Cosign signature and SLSA provenance before
 admission:
 

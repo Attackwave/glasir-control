@@ -4,6 +4,6 @@ if [ "$#" -ne 2 ]; then echo "usage: $0 <image@sha256:digest> <github-org/reposi
 image="$1"; repository="$2"
 issuer='https://token.actions.githubusercontent.com'
 identity="https://github.com/${repository}/.github/workflows/release.yml@refs/tags/"
-cosign verify --certificate-oidc-issuer "$issuer" --certificate-identity-regexp "^${identity}control-v.+$" "$image"
-cosign verify-attestation --type slsaprovenance --certificate-oidc-issuer "$issuer" --certificate-identity-regexp "^${identity}control-v.+$" "$image"
+cosign verify --certificate-oidc-issuer "$issuer" --certificate-identity-regexp "^${identity}(control-)?v.+$" "$image"
+cosign verify-attestation --type slsaprovenance --certificate-oidc-issuer "$issuer" --certificate-identity-regexp "^${identity}(control-)?v.+$" "$image"
 echo "verified: $image"
