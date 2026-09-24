@@ -213,5 +213,9 @@ jobs:
           pattern: "!*.dockerbuild"
       - uses: softprops/action-gh-release@v2
         with:
+          # A tag with a suffix (`v0.1.0-rc.6`) is a release candidate. Unmarked,
+          # GitHub listed it as the latest release, which is what "download the
+          # latest" and Scoop's update check resolve to.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: artifacts/**/*
           generate_release_notes: true
