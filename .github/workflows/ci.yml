@@ -55,6 +55,17 @@ jobs:
       - name: Core-Control mTLS forwarding integration
         run: GLASIR_CORE_BIN="$GITHUB_WORKSPACE/target/core-integration/release/glasir" bash scripts/test-core-control-mtls.sh
 
+  # A dependency under a licence about.toml does not accept fails here, in the
+  # pull request, rather than at the release tag.
+  licences:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          cargo install cargo-about --locked --features cli
+          cargo about generate --locked --fail about.hbs -o THIRD-PARTY-LICENSES.txt
+
   container:
     runs-on: ubuntu-latest
     steps:
