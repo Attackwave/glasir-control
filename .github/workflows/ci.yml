@@ -1,7 +1,10 @@
 name: ci
 
+# Once per change: a pull request runs on `pull_request`, and `main` after the
+# merge. Both triggers on every push ran each job twice for every pull request.
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
