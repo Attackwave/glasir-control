@@ -297,6 +297,7 @@ th {
 td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
 tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: var(--surface-2); }
+td code { white-space: nowrap; }
 td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 td.time { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
 .table-foot { padding: 10px 14px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); }
