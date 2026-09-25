@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glasir Control</title>
+<link rel="stylesheet" href="/console.css">
+</head>
+<body>
+
+<svg width="0" height="0" class="defs" aria-hidden="true">
+  <symbol id="mark" viewBox="0 0 32 32">
+    <circle cx="16" cy="16" r="14.5" fill="none" stroke="currentColor" stroke-width="2"/>
+    <circle cx="16" cy="9" r="3" fill="currentColor"/>
+    <circle cx="9.5" cy="20" r="3" fill="currentColor"/>
+    <circle cx="22.5" cy="20" r="3" fill="currentColor"/>
+    <path d="M16 12 9.5 17M16 12l6.5 5M12.5 20h7" stroke="currentColor" stroke-width="1.6"/>
+  </symbol>
+</svg>
+
+<!-- Sign-in: the token lives in this tab's memory and nowhere else. -->
+<div class="signin" id="signin">
+  <form class="signin-card" id="signin-form" autocomplete="off">
+    <div class="brand brand-lg">
+      <svg class="mark"><use href="#mark"/></svg>
+      <div><strong>Glasir Control</strong><span>Code intelligence governance</span></div>
+    </div>
+    <h1>Sign in</h1>
+    <p class="muted">Use the access token your administrator issued. It stays in this browser tab's memory and is never stored.</p>
+    <label class="field">
+      <span>Access token</span>
+      <input id="token" type="password" required spellcheck="false" autocomplete="off">
+    </label>
+    <p class="form-error" id="signin-error" role="alert" hidden></p>
+    <button class="btn btn-primary btn-block" type="submit" id="signin-button">Sign in</button>
+    <p class="fineprint" id="instance-line">Checking instance…</p>
+  </form>
+</div>
+
+<div class="app" id="app" hidden>
+  <aside class="sidebar">
+    <div class="brand">
+      <svg class="mark"><use href="#mark"/></svg>
+      <div><strong>Glasir Control</strong><span>Enterprise console</span></div>
+    </div>
+    <nav aria-label="Sections">
+      <div class="nav-group">Review</div>
+      <a href="#review" data-view="review"><svg viewBox="0 0 20 20"><path d="M3 10h4l2-5 3 10 2-5h3"/></svg>Impact review</a>
+      <div class="nav-group admin-only">Governance</div>
+      <a href="#access" data-view="access" class="admin-only"><svg viewBox="0 0 20 20"><circle cx="7" cy="7" r="3"/><path d="M2 17c0-3 2.5-5 5-5s5 2 5 5M13 5h5M13 9h5M15 13h3"/></svg>Access review</a>
+      <a href="#audit" data-view="audit" class="admin-only"><svg viewBox="0 0 20 20"><path d="M4 3h9l3 3v11H4z M7 8h6M7 11h6M7 14h4"/></svg>Audit log</a>
+      <a href="#policy" data-view="policy" class="admin-only"><svg viewBox="0 0 20 20"><path d="M10 2 3 5v5c0 4 3 7 7 8 4-1 7-4 7-8V5z M7 10l2 2 4-4"/></svg>Policy changes</a>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="status-line"><span class="dot" id="health-dot"></span><span id="health-text">Instance</span></div>
+      <div class="fineprint" id="version-line"></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <div class="crumb" id="crumb"></div>
+        <h1 id="title"></h1>
+      </div>
+      <div class="session">
+        <div class="avatar" id="avatar" aria-hidden="true"></div>
+        <div class="who"><strong id="user"></strong><span id="role"></span></div>
+        <button class="btn btn-ghost" id="signout" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <!-- Impact review -->
+    <section class="view" data-panel="review">
+      <p class="lede">What a change touches across every repository in a workspace: changed symbols, the code that depends on them, and the reasons the risk is rated as it is.</p>
+      <form class="card toolbar" id="review-form">
+        <label class="field grow">
+          <span>Workspace</span>
+          <select id="workspace" required></select>
+        </label>
+        <label class="field">
+          <span>Compare against revision</span>
+          <input id="rev" value="HEAD~1" spellcheck="false" autocomplete="off" required>
+        </label>
+        <label class="field narrow">
+          <span>Depth</span>
+          <select id="depth"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select>
+        </label>
+        <button class="btn btn-primary" type="submit" id="review-run">Run review</button>
+      </form>
+      <p class="hint" id="workspace-hint" hidden></p>
+      <div id="review-result"></div>
+    </section>
+
+    <!-- Access review -->
+    <section class="view" data-panel="access">
+      <p class="lede">Who can reach which repository, directly or through a role, and which tools each role may call. Backend credentials are never part of this view.</p>
+      <div class="toolbar-inline">
+        <input class="search" id="access-filter" type="search" placeholder="Filter by user, role, group or repository">
+        <button class="btn" type="button" id="access-refresh">Refresh</button>
+        <button class="btn" type="button" id="access-export">Export JSON</button>
+      </div>
+      <div id="access-result"></div>
+    </section>
+
+    <!-- Audit log -->
+    <section class="view" data-panel="audit">
+      <p class="lede">The most recent requests the control plane recorded, newest first. The log itself is append-only and hash-chained on disk.</p>
+      <div class="toolbar-inline">
+        <input class="search" id="audit-filter" type="search" placeholder="Filter by identity, path or repository">
+        <select id="audit-status" aria-label="Status">
+          <option value="">All outcomes</option>
+          <option value="2">Success (2xx)</option>
+          <option value="4">Refused (4xx)</option>
+          <option value="5">Errors (5xx)</option>
+        </select>
+        <button class="btn" type="button" id="audit-refresh">Refresh</button>
+      </div>
+      <div id="audit-result"></div>
+    </section>
+
+    <!-- Policy changes -->
+    <section class="view" data-panel="policy">
+      <p class="lede">Rights change through proposals. One administrator proposes, a different one approves; only then does the active policy change.</p>
+      <div class="split">
+        <div class="card list-card">
+          <div class="card-head">
+            <h2>Proposals</h2>
+            <button class="btn btn-primary btn-sm" type="button" id="policy-new">New proposal</button>
+          </div>
+          <div id="policy-list"></div>
+        </div>
+        <div class="card detail-card" id="policy-detail"></div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="/console.js"></script>
+</body>
+</html>

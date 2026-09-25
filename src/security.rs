@@ -63,6 +63,17 @@ pub fn url_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// A git revision a review may compare against: a branch, tag, commit or an
+/// ancestor expression like `HEAD~3` or `main^2`. It reaches `git diff` as an
+/// argument on the core, so a leading `-` would be read as an option.
+pub fn is_valid_revision(rev: &str) -> bool {
+    rev.len() <= 200
+        && !rev.starts_with('-')
+        && rev.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'.' | b'/' | b'_' | b'-' | b'~' | b'^')
+        })
+}
+
 /// Validates that a tree or repository name strictly contains safe characters.
 /// Rejects path separators, dots, control characters, null bytes, and traversal.
 pub fn is_valid_identifier(name: &str) -> bool {
@@ -151,6 +162,31 @@ pub fn validate_http_smuggling(headers: &[(String, String)]) -> Result<(), &'sta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_revision_is_a_revision_and_never_an_option() {
+        for ok in [
+            "HEAD~1",
+            "main^2",
+            "v0.2.1",
+            "origin/main",
+            "3f8ca1b",
+            "feat/x-y_z",
+        ] {
+            assert!(is_valid_revision(ok), "{ok}");
+        }
+        for bad in [
+            "--output=/tmp/x",
+            "-p",
+            "a b",
+            "HEAD;rm",
+            "a=b",
+            "$(x)",
+            &"a".repeat(201),
+        ] {
+            assert!(!is_valid_revision(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn test_constant_time_eq() {

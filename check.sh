@@ -67,7 +67,7 @@ PIDS="$! $(jobs -p | tr '\n' ' ')"
 
 python3 - > "$WORK/tokens" <<'PY'
 import hashlib
-for name, tok in [("anna", "tok-anna"), ("bruno", "tok-bruno"), ("clara", "tok-clara")]:
+for name, tok in [("anna", "tok-anna"), ("bruno", "tok-bruno"), ("clara", "tok-clara"), ("dora", "tok-dora")]:
     print(f"{hashlib.sha256(tok.encode()).hexdigest()}\t{name}\t0")
 PY
 
@@ -75,6 +75,8 @@ printf 'tree\talpha\t127.0.0.1:7001\t%s\n' "$ALPHA_BACKEND_TOKEN" >  "$WORK/righ
 printf 'tree\tbeta\t127.0.0.1:7002\t%s\n' "$BETA_BACKEND_TOKEN"  >> "$WORK/rights.tsv"
 printf 'grant\tanna\talpha\n'                    >> "$WORK/rights.tsv"
 printf 'grant\tbruno\tbeta\n'                    >> "$WORK/rights.tsv"
+printf 'role\tadmin\talpha\n'                     >> "$WORK/rights.tsv"
+printf 'member\tdora\tadmin\n'                    >> "$WORK/rights.tsv"
 printf 'github:acme/alpha\talpha\n' > "$WORK/repo-map.tsv"
 printf 'gitlab:acme\tbeta\n' >> "$WORK/repo-map.tsv"
 
@@ -152,6 +154,26 @@ grep -v '^grant.anna' "$WORK/rights.tsv" > "$WORK/r2" && mv "$WORK/r2" "$WORK/ri
 sleep 1
 is "anna loses alpha at once"  404 "$(code alpha tok-anna)"
 is "bruno is untouched"        200 "$(code beta  tok-bruno)"
+
+echo "browser console"
+CONSOLE_HEADERS=$(curl -s -D - -o "$WORK/console.html" "localhost:8800/review")
+case "$CONSOLE_HEADERS" in *"text/html"*) ok "/review serves the console" ;; *) fail "/review is not HTML" ;; esac
+grep -q 'src="/console.js"' "$WORK/console.html" && ok "the console loads its script" || fail "console without script"
+is "/admin serves the same console" "$(md5sum < "$WORK/console.html")" "$(curl -s localhost:8800/admin | md5sum)"
+is "stylesheet is served" 200 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/console.css)"
+is "script is served" 200 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/console.js)"
+case "$CONSOLE_HEADERS" in *"style-src 'self'"*) ok "CSP allows only the console's own stylesheet" ;; *) fail "CSP lacks style-src 'self'" ;; esac
+case "$CONSOLE_HEADERS" in *"default-src 'none'"*) ok "CSP still denies everything else" ;; *) fail "CSP default-src loosened" ;; esac
+SESSION=$(curl -s localhost:8800/api/session -H "Authorization: Bearer tok-anna")
+is "session names the user" '{"admin":false,"user":"anna"}' "$SESSION"
+is "session knows an administrator" '{"admin":true,"user":"dora"}' "$(curl -s localhost:8800/api/session -H 'Authorization: Bearer tok-dora')"
+is "session without a credential is refused" 401 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/session)"
+is "proposal list is hidden from a non-administrator" 404 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/admin/policy/proposals -H 'Authorization: Bearer tok-anna')"
+LIST=$(curl -s localhost:8800/api/admin/policy/proposals -H 'Authorization: Bearer tok-dora')
+case "$LIST" in *'"active_rights":'*'"proposals":[]'*) ok "an administrator lists proposals" ;; *) fail "proposal list: $LIST" ;; esac
+review() { curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8800/api/review/impact -H "Authorization: Bearer tok-anna" -d "{\"workspace\":\"none\",\"rev\":\"$1\"}"; }
+is "a revision that is an option is refused" 400 "$(review '--output')"
+is "an ancestor revision is accepted" 404 "$(review 'HEAD~1')"
 
 echo "code-host sync via github webhook"
 # clara has no access to alpha initially

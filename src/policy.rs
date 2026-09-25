@@ -60,3 +60,38 @@ pub fn read(dir: &Path, id: &str, active: &Path) -> Result<serde_json::Value, St
     let current = std::fs::read_to_string(active).map_err(|e| e.to_string())?;
     Ok(serde_json::json!({"proposal":proposal,"active_rights":current}))
 }
+
+/// Every proposal's metadata, newest first, without the proposed text.
+pub fn list(dir: &Path) -> Result<Vec<serde_json::Value>, String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(value) = std::fs::read(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| {
+                serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e| e.to_string())
+            })
+        else {
+            continue;
+        };
+        out.push(serde_json::json!({
+            "id": value["id"], "author": value["author"], "created_at": value["created_at"],
+            "state": value["state"], "approver": value["approver"], "approved_at": value["approved_at"],
+        }));
+    }
+    out.sort_by(|a, b| {
+        b["created_at"]
+            .as_u64()
+            .cmp(&a["created_at"].as_u64())
+            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+    });
+    Ok(out)
+}

@@ -99,7 +99,10 @@ ENDPOINTS
   GET  /api/admin/access-review   Administrator-only, secret-free access review
   GET  /api/admin/audit           Administrator-only recent audit timeline
   POST /api/review/impact         Run a bounded diff-impact review across an authorized workspace
-  GET  /review                    Browser review console (token stays in browser memory)
+  GET  /review, /admin            Browser console: impact review, access review, audit
+                                 log, policy changes (token stays in tab memory)
+  GET  /api/session              Who the credential belongs to, and whether it is admin
+  GET  /api/admin/policy/proposals  Administrator-only proposal list and active policy
   GET  /health                    Health check & system status for load balancers
   GET  /ready                     Readiness probe; fails closed on unusable identity or stale rights
   GET  /metrics                   Prometheus operational metrics
@@ -1049,17 +1052,99 @@ glasir_control_permission_mirror_fresh {}\n",
         cfg.rate_limiter.check_and_consume(&client_ip, 5.0);
     }
 
-    if req.path == "/review" && req.method == "GET" {
-        return respond_review_html(&mut stream);
+    // One console answers both paths; the page opens the matching section.
+    if (req.path == "/review" || req.path == "/admin") && req.method == "GET" {
+        return respond_ui(&mut stream, "text/html; charset=utf-8", CONSOLE_HTML);
     }
-    if req.path == "/review.js" && req.method == "GET" {
-        return respond_review_js(&mut stream);
+    if req.path == "/console.css" && req.method == "GET" {
+        return respond_ui(&mut stream, "text/css; charset=utf-8", CONSOLE_CSS);
     }
-    if req.path == "/admin" && req.method == "GET" {
-        return respond_admin_html(&mut stream);
+    if req.path == "/console.js" && req.method == "GET" {
+        return respond_ui(
+            &mut stream,
+            "application/javascript; charset=utf-8",
+            CONSOLE_JS,
+        );
     }
-    if req.path == "/admin.js" && req.method == "GET" {
-        return respond_admin_js(&mut stream);
+
+    // Who the presented credential belongs to, so the console can greet the
+    // user and show the administrator sections only to administrators.
+    if req.path == "/api/session" && req.method == "GET" {
+        let (status, bytes, res) = match &who {
+            Some(user) => {
+                let admin = cfg.rights.current().is_admin_with_groups(user, groups);
+                let body = serde_json::json!({"user": user, "admin": admin}).to_string();
+                let len = body.len();
+                (200, len, respond_json(&mut stream, 200, "200 OK", &body))
+            }
+            None => (401, 34, unauthorized(&mut stream)),
+        };
+        if let Some(audit) = &cfg.audit {
+            audit.record(AuditRecord {
+                ts: start_ts,
+                who: who.clone(),
+                tree: None,
+                method: req.method,
+                path: req.path,
+                status,
+                bytes,
+                duration_ms: start_inst.elapsed().as_millis() as u64,
+                client_addr,
+            });
+        }
+        return res;
+    }
+
+    // The proposals an administrator can review, plus the active policy they
+    // would replace. Administrators already read both through a single
+    // proposal; the list only saves them knowing every ID by heart.
+    if req.path == "/api/admin/policy/proposals" && req.method == "GET" {
+        let (status, bytes, res) = match &who {
+            Some(user) if cfg.rights.current().is_admin_with_groups(user, groups) => {
+                match (
+                    policy::list(&cfg.policy_proposals),
+                    std::fs::read_to_string(cfg.rights.path()),
+                ) {
+                    (Ok(proposals), Ok(active)) => {
+                        let body =
+                            serde_json::json!({"proposals": proposals, "active_rights": active})
+                                .to_string();
+                        let len = body.len();
+                        (200, len, respond_json(&mut stream, 200, "200 OK", &body))
+                    }
+                    _ => (
+                        503,
+                        21,
+                        respond(
+                            &mut stream,
+                            503,
+                            "503 Service Unavailable",
+                            "proposals unavailable",
+                        ),
+                    ),
+                }
+            }
+            Some(_) => (
+                404,
+                9,
+                respond(&mut stream, 404, "404 Not Found", "not found"),
+            ),
+            None => (401, 34, unauthorized(&mut stream)),
+        };
+        if let Some(audit) = &cfg.audit {
+            audit.record(AuditRecord {
+                ts: start_ts,
+                who: who.clone(),
+                tree: None,
+                method: req.method,
+                path: req.path,
+                status,
+                bytes,
+                duration_ms: start_inst.elapsed().as_millis() as u64,
+                client_addr,
+            });
+        }
+        return res;
     }
 
     if req.path == "/api/review/impact" && req.method == "POST" {
@@ -1081,11 +1166,7 @@ glasir_control_permission_mirror_fresh {}\n",
                     .filter(|name| security::is_valid_identifier(name));
                 let rev = input["rev"].as_str().unwrap_or("");
                 let depth = input["depth"].as_u64().unwrap_or(3).clamp(1, 10);
-                if rev.len() > 200
-                    || !rev.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'/' | b'_' | b'-')
-                    })
-                {
+                if !security::is_valid_revision(rev) {
                     return respond(&mut stream, 400, "400 Bad Request", "invalid revision");
                 }
                 let rights = cfg.rights.current();
@@ -1623,6 +1704,9 @@ fn provider_workspace_review(
         .workspaces
         .get(workspace)
         .ok_or("unknown workspace")?;
+    if !security::is_valid_revision(rev) {
+        return Err("invalid revision".into());
+    }
     let request = serde_json::to_vec(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"detect_changes","arguments":{"rev":rev,"depth":3}}})).map_err(|e| e.to_string())?;
     let mut lines = vec![format!("Workspace `{workspace}` — revision `{rev}`")];
     for name in trees {
@@ -1664,30 +1748,14 @@ fn provider_workspace_review(
     Ok(lines.join("\n"))
 }
 
-const REVIEW_HTML: &str = r#"<!doctype html><meta charset="utf-8"><title>Glasir Review</title><h1>Glasir workspace review</h1><p>Token remains in this browser tab and is never persisted.</p><label>Bearer token <input id="token" type="password" autocomplete="off"></label> <button id="load">Load workspaces</button><p><label>Workspace <select id="workspace"></select></label> <label>Revision <input id="rev" placeholder="main"></label> <button id="review">Review impact</button></p><pre id="output" aria-live="polite"></pre><script src="/review.js"></script>"#;
-const REVIEW_JS: &str = r#"const out=document.querySelector('#output'), token=document.querySelector('#token'), select=document.querySelector('#workspace'), rev=document.querySelector('#rev');
-const auth=()=>({Authorization:'Bearer '+token.value,'Content-Type':'application/json'});
-document.querySelector('#load').onclick=async()=>{const r=await fetch('/workspaces',{headers:auth()});const v=await r.json();select.replaceChildren(...v.map(w=>Object.assign(document.createElement('option'),{value:w.name,textContent:w.name+' — '+w.trees.join(', ')})));out.textContent=v.length?'':'No fully authorized workspaces.'};
-document.querySelector('#review').onclick=async()=>{out.textContent='Review running…';const r=await fetch('/api/review/impact',{method:'POST',headers:auth(),body:JSON.stringify({workspace:select.value,rev:rev.value,depth:3})});out.textContent=JSON.stringify(await r.json(),null,2)};"#;
-const ADMIN_HTML: &str = r#"<!doctype html><meta charset="utf-8"><title>Glasir Admin</title><h1>Glasir policy administration</h1><p>Token stays only in this browser tab.</p><label>Bearer token <input id="token" type="password" autocomplete="off"></label><button id="access">Access review</button><button id="timeline">Audit timeline</button><h2>Proposal</h2><label>ID <input id="id" autocomplete="off"></label><button id="load">Load diff</button><button id="approve">Approve</button><p><label>Rights proposal<br><textarea id="rights" rows="14" cols="100"></textarea></label></p><button id="create">Create proposal</button><pre id="output" aria-live="polite"></pre><script src="/admin.js"></script>"#;
-const ADMIN_JS: &str = r#"const out=document.querySelector('#output'),token=document.querySelector('#token'),id=document.querySelector('#id'),rights=document.querySelector('#rights');const h=()=>({Authorization:'Bearer '+token.value,'Content-Type':'application/json'});async function show(url,opt={}){const r=await fetch(url,{...opt,headers:h()});out.textContent=JSON.stringify(await r.json(),null,2)}document.querySelector('#access').onclick=()=>show('/api/admin/access-review');document.querySelector('#timeline').onclick=()=>show('/api/admin/audit');document.querySelector('#load').onclick=()=>show('/api/admin/policy/proposals/'+encodeURIComponent(id.value));document.querySelector('#create').onclick=()=>show('/api/admin/policy/proposals',{method:'POST',body:JSON.stringify({id:id.value,rights:rights.value)});document.querySelector('#approve').onclick=()=>show('/api/admin/policy/proposals/'+encodeURIComponent(id.value)+'/approve',{method:'POST'});"#;
+const CONSOLE_HTML: &str = include_str!("../assets/console.html");
+const CONSOLE_CSS: &str = include_str!("../assets/console.css");
+const CONSOLE_JS: &str = include_str!("../assets/console.js");
 
-fn respond_review_html(stream: &mut TcpStream) -> std::io::Result<()> {
-    respond_ui(stream, "text/html; charset=utf-8", REVIEW_HTML)
-}
-fn respond_review_js(stream: &mut TcpStream) -> std::io::Result<()> {
-    respond_ui(stream, "application/javascript; charset=utf-8", REVIEW_JS)
-}
-fn respond_admin_html(stream: &mut TcpStream) -> std::io::Result<()> {
-    respond_ui(stream, "text/html; charset=utf-8", ADMIN_HTML)
-}
-fn respond_admin_js(stream: &mut TcpStream) -> std::io::Result<()> {
-    respond_ui(stream, "application/javascript; charset=utf-8", ADMIN_JS)
-}
 fn respond_ui(stream: &mut TcpStream, content_type: &str, body: &str) -> std::io::Result<()> {
     write!(
         stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )?;
     stream.flush()
