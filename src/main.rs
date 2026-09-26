@@ -23,6 +23,7 @@
 mod audit;
 mod auth;
 mod backend_tls;
+mod crossrepo;
 mod policy;
 mod proxy;
 mod rights;
@@ -106,7 +107,7 @@ ENDPOINTS
   GET  /review, /admin            Browser console: impact review, access review, audit
                                  log, policy changes (token stays in tab memory)
   GET  /api/session              Who the credential belongs to, and whether it is admin
-  GET  /api/sso                  Console sign-on settings (public client, no secret); 404 without them
+  GET  /api/sso                  Console sign-on settings (public client, no secret); 204 without them
   GET  /api/admin/policy/proposals  Administrator-only proposal list and active policy
   GET  /health                    Health check & system status for load balancers
   GET  /ready                     Readiness probe; fails closed on unusable identity or stale rights
@@ -1111,7 +1112,9 @@ glasir_control_permission_mirror_fresh {}\n",
     if req.path == "/api/sso" && req.method == "GET" {
         return match &cfg.sso {
             Some(sso) => respond_json(&mut stream, 200, "200 OK", &sso.public_json()),
-            None => respond_json(&mut stream, 404, "404 Not Found", "{}"),
+            // No content rather than 404: the page asks on every load, and
+            // a browser logs every 404 as an error.
+            None => respond_json(&mut stream, 204, "204 No Content", ""),
         };
     }
 
@@ -1226,31 +1229,64 @@ glasir_control_permission_mirror_fresh {}\n",
                 }) else {
                     return respond(&mut stream, 404, "404 Not Found", "not found");
                 };
-                let request_body = serde_json::to_vec(&serde_json::json!({
-                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                    "params": {"name": "detect_changes", "arguments": {"rev": rev, "depth": depth}}
-                }))
-                .map_err(std::io::Error::other)?;
-                let mut results = Vec::new();
-                for tree_name in trees {
-                    let tree = rights.tree(&tree_name).expect("validated workspace tree");
+                // One tool call on one tree of the workspace: its HTTP status
+                // and JSON-RPC reply, or `None` when the tree is not answering.
+                let call = |tree_name: &str, tool: &str, arguments: serde_json::Value| {
+                    let tree = rights.tree(tree_name).expect("validated workspace tree");
                     let internal = proxy::Request {
                         method: "POST".into(),
                         path: "/mcp/internal".into(),
                         headers: Vec::new(),
-                        body: request_body.clone(),
+                        body: serde_json::to_vec(&serde_json::json!({
+                            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                            "params": {"name": tool, "arguments": arguments}
+                        }))
+                        .ok()?,
                     };
-                    match proxy::forward(tree, &internal, cfg.backend_tls.as_ref()) {
-                        Ok(reply) => {
-                            let status = proxy::extract_status(&reply);
-                            let body = reply.splitn(2, |byte| *byte == b'\n').last().unwrap_or(&reply);
-                            let json_start = body.iter().position(|byte| *byte == b'{').unwrap_or(0);
-                            let value: serde_json::Value = serde_json::from_slice(&body[json_start..]).unwrap_or_else(|_| serde_json::json!({"error":"invalid core response"}));
+                    let reply = proxy::forward(tree, &internal, cfg.backend_tls.as_ref()).ok()?;
+                    let status = proxy::extract_status(&reply);
+                    let body = reply
+                        .splitn(2, |byte| *byte == b'\n')
+                        .last()
+                        .unwrap_or(&reply);
+                    let json_start = body.iter().position(|byte| *byte == b'{').unwrap_or(0);
+                    let value: serde_json::Value = serde_json::from_slice(&body[json_start..])
+                        .unwrap_or_else(|_| serde_json::json!({"error":"invalid core response"}));
+                    Some((status, value))
+                };
+                let mut results = Vec::new();
+                let mut changed = Vec::new();
+                for tree_name in &trees {
+                    match call(tree_name, "detect_changes", serde_json::json!({"rev": rev, "depth": depth})) {
+                        Some((status, value)) => {
+                            let symbols = value["result"]["structuredContent"]["changed_symbols"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|s| s.as_str().map(str::to_string))
+                                .collect();
+                            changed.push((tree_name.clone(), symbols));
                             results.push(serde_json::json!({"tree": tree_name, "status": status, "result": value}));
                         }
-                        Err(_) => results.push(serde_json::json!({"tree": tree_name, "status": 502, "error":"tree is not answering"})),
+                        None => results.push(serde_json::json!({"tree": tree_name, "status": 502, "error":"tree is not answering"})),
                     }
                 }
+                // A client in one repository and its server in another: each
+                // tree reports what it serves and requests, and the workspace
+                // joins them. A Core without the tool reports nothing.
+                let surfaces: Vec<(String, serde_json::Value)> = if trees.len() > 1 {
+                    trees
+                        .iter()
+                        .filter_map(|t| {
+                            let (_, value) = call(t, "http_surface", serde_json::json!({}))?;
+                            Some((t.clone(), value["result"]["structuredContent"].clone()))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let links = crossrepo::links(&surfaces);
+                let cross_repo_callers = crossrepo::callers_of_changes(&links, &changed);
                 let packages = rights
                     .workspace_packages
                     .get(&name)
@@ -1261,7 +1297,7 @@ glasir_control_permission_mirror_fresh {}\n",
                     .as_ref()
                     .map(|report| workspace_evidence(report, &packages))
                     .unwrap_or_else(|| serde_json::json!({"edges":[],"unresolved":[]}));
-                let body = serde_json::to_string(&serde_json::json!({"workspace": name, "rev": rev, "depth": depth, "repositories": results, "cross_repo_evidence": evidence})).map_err(std::io::Error::other)?;
+                let body = serde_json::to_string(&serde_json::json!({"workspace": name, "rev": rev, "depth": depth, "repositories": results, "cross_repo_evidence": evidence, "cross_repo_routes": links.len(), "cross_repo_callers": cross_repo_callers})).map_err(std::io::Error::other)?;
                 let len = body.len();
                 (200, len, respond_json(&mut stream, 200, "200 OK", &body))
             }

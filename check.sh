@@ -11,6 +11,7 @@
 # - Pre-flight configuration validation CLI (--validate)
 # - Code-Host Permission Synchronization (GitHub & GitLab Webhooks + CLI sync)
 # - OIDC sign-in with a real RS256 signature, and no static-token fallback
+# - Cross-repository routes: a client's request to a server in another repository
 set -u
 
 GLASIR=${GLASIR:-../glasir/target/release/glasir}
@@ -176,7 +177,7 @@ review() { curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8800/api/rev
 is "a revision that is an option is refused" 400 "$(review '--output')"
 is "an ancestor revision is accepted" 404 "$(review 'HEAD~1')"
 is "the console answers a sign-on return" 200 "$(curl -s -o /dev/null -w '%{http_code}' 'localhost:8800/review?code=SIGNONCODE&state=s')"
-is "no sign-on without its settings" 404 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/sso)"
+is "no sign-on without its settings" 204 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/sso)"
 
 echo "code-host sync via github webhook"
 # clara has no access to alpha initially
@@ -282,6 +283,57 @@ is "a changed signature is refused" 401 "$(oidc beta "${GOOD%?}$([ "${GOOD: -1}"
 is "a static credential does not bypass oidc" 401 "$(oidc beta tok-bruno)"
 case "$(curl -s localhost:8801/api/sso)" in *'"client_id":"console"'*'"token_endpoint":"https://login.idp.test/token"'*) ok "the console learns its sign-on settings" ;; *) fail "no sign-on settings" ;; esac
 case "$(curl -s -D - -o /dev/null localhost:8801/review)" in *"connect-src 'self' https://login.idp.test;"*) ok "CSP admits the token endpoint and nothing else" ;; *) fail "CSP lacks the token endpoint" ;; esac
+
+echo "cross-repository routes"
+# A client in one repository, its server in another: the workspace review
+# names the client's request as a caller of the changed handler.
+repo() { git -C "$1" -c user.email=c@c -c user.name=c "${@:2}" >/dev/null; }
+mkdir -p "$WORK/shop/src" "$WORK/web/src"
+cat > "$WORK/shop/src/OrderApi.java" <<'JAVA'
+@RequestMapping("/api/orders")
+public class OrderApi {
+    @GetMapping("/{id}")
+    public Order show(long id) { return null; }
+
+    @DeleteMapping("/{id}")
+    public void cancel(long id) { }
+}
+JAVA
+cat > "$WORK/web/src/orders.ts" <<'TS'
+export class Orders {
+  url = '/api/orders';
+  one(id: number) {
+    return this.http.get<{ order: Order }>(this.url + '/' + id);
+  }
+  drop(id: number) {
+    return this.http.delete<void>(`${this.url}/${id}`);
+  }
+}
+TS
+for r in shop web; do git init -q "$WORK/$r"; repo "$WORK/$r" add -A; repo "$WORK/$r" commit -qm one; done
+sed -i 's|public Order show(long id) { return null; }|public Order show(long id) { return lookup(id); }|' "$WORK/shop/src/OrderApi.java"
+repo "$WORK/shop" commit -qam two
+echo >> "$WORK/web/src/orders.ts"; repo "$WORK/web" commit -qam two
+"$GLASIR" analyse "$WORK/shop" >/dev/null 2>&1
+"$GLASIR" analyse "$WORK/web" >/dev/null 2>&1
+SHOP_TOKEN=$(cd "$WORK/shop" && "$GLASIR" token add control 2>/dev/null)
+WEB_TOKEN=$(cd "$WORK/web" && "$GLASIR" token add control 2>/dev/null)
+"$GLASIR" serve "$WORK/shop" --http 7003 --behind-control-plane >/dev/null 2>&1 &
+PIDS="$PIDS $!"
+"$GLASIR" serve "$WORK/web" --http 7004 --behind-control-plane >/dev/null 2>&1 &
+PIDS="$PIDS $!"
+printf 'tree\tshop\t127.0.0.1:7003\t%s\ntree\tweb\t127.0.0.1:7004\t%s\ngrant\tbruno\tshop\ngrant\tbruno\tweb\nworkspace\tstore\tshop,web\n' \
+  "$SHOP_TOKEN" "$WEB_TOKEN" > "$WORK/xrights.tsv"
+"$CONTROL" --listen 127.0.0.1:8802 --rights "$WORK/xrights.tsv" --tokens "$WORK/tokens" \
+  --audit "$WORK/xaudit.jsonl" >/dev/null 2>&1 &
+PIDS="$PIDS $!"
+sleep 3
+XREVIEW=$(curl -s -X POST localhost:8802/api/review/impact -H "Authorization: Bearer tok-bruno" \
+  -d '{"workspace":"store","rev":"HEAD~1","depth":3}')
+CALLERS=$(printf %s "$XREVIEW" | python3 -c 'import sys,json; r=json.load(sys.stdin); print(" ".join(f"{e["handler"]}<-{c["tree"]}:{c["sender"]}" for e in r.get("cross_repo_callers",[]) for c in e["callers"]))')
+is "the changed handler is called from the other repository" \
+  "src/OrderApi.java#show<-web:src/orders.ts#one" "$CALLERS"
+case "$XREVIEW" in *'"cross_repo_routes":2'*) ok "both requests reach the other repository" ;; *) fail "cross-repo routes: $(printf %s "$XREVIEW" | head -c 300)" ;; esac
 
 echo
 if [ "$FAILED" = 0 ]; then echo "all checks passed"; else echo "FAILURES"; fi
