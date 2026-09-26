@@ -9,7 +9,7 @@ repository = "https://github.com/Attackwave/glasir-control"
 publish = false
 
 [dependencies]
-jsonwebtoken = "9.3.1"
+jsonwebtoken = "10.3.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2.12", default-features = false, features = ["json", "tls"] }
