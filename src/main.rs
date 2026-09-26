@@ -119,7 +119,7 @@ ENDPOINTS
   GET  /metrics                   Prometheus operational metrics
   POST /api/sync/webhook/github   GitHub webhook listener (member/collaborator events)
   POST /api/sync/webhook/gitlab   GitLab webhook listener (member events)
-  GET  /api/sync/status           Code-host sync status
+  GET  /api/sync/status           Administrator-only: which code-host webhooks are configured
   GET  /api/cross-repo/evidence   Administrator-only: the whole --cross-repo-evidence report
   POST /v1/events                 Audit ingest (--audit-ingest listener only, mTLS + HMAC)
 ";
@@ -1043,16 +1043,6 @@ glasir_control_permission_mirror_fresh {}\n",
     }
 
     // Sync Status Endpoint
-    if req.path == "/api/sync/status" && req.method == "GET" {
-        let has_gh = cfg.sync.github_secret.is_some();
-        let has_gl = cfg.sync.gitlab_secret.is_some();
-        let json = format!(
-            "{{\"github_webhook_configured\":{},\"gitlab_webhook_configured\":{}}}",
-            has_gh, has_gl
-        );
-        return respond_json(&mut stream, 200, "200 OK", &json);
-    }
-
     let bearer = req
         .header("authorization")
         .and_then(|v| v.strip_prefix("Bearer "));
@@ -1609,6 +1599,45 @@ glasir_control_permission_mirror_fresh {}\n",
                 "policy approval rejected",
             )
         };
+    }
+
+    // Which code-host integrations are configured is reconnaissance for an
+    // attacker and of use only to whoever operates them: administrators.
+    if req.path == "/api/sync/status" && req.method == "GET" {
+        let (status, bytes, res) = match &who {
+            Some(user) if cfg.rights.current().is_admin_with_groups(user, groups) => {
+                let body = serde_json::json!({
+                    "github_webhook_configured": cfg.sync.github_secret.is_some(),
+                    "gitlab_webhook_configured": cfg.sync.gitlab_secret.is_some(),
+                })
+                .to_string();
+                (
+                    200,
+                    body.len(),
+                    respond_json(&mut stream, 200, "200 OK", &body),
+                )
+            }
+            Some(_) => (
+                404,
+                12,
+                respond(&mut stream, 404, "404 Not Found", "not found"),
+            ),
+            None => (401, 34, unauthorized(&mut stream)),
+        };
+        if let Some(audit) = &cfg.audit {
+            audit.record(AuditRecord {
+                ts: start_ts,
+                who: who.clone(),
+                tree: None,
+                method: req.method,
+                path: req.path,
+                status,
+                bytes,
+                duration_ms: start_inst.elapsed().as_millis() as u64,
+                client_addr,
+            });
+        }
+        return res;
     }
 
     if req.path == "/api/cross-repo/evidence" && req.method == "GET" {

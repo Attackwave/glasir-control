@@ -317,7 +317,7 @@ process to promote it.
 | Review | `POST /api/review/impact` | authenticated, for an authorised workspace |
 | Console | `GET /review`, `GET /admin`, `/console.js`, `/console.css`, `GET /api/session`, `GET /api/sso` | page and sign-on settings without a credential; session with one |
 | Administration | `GET /api/admin/access-review`, `GET /api/admin/audit`, `GET`/`POST /api/admin/policy/proposals`, `GET /api/admin/policy/proposals/<id>`, `POST …/<id>/approve`, `GET /api/cross-repo/evidence` | administrators; everyone else gets `404` |
-| Code hosts | `POST /api/sync/webhook/github`, `POST /api/sync/webhook/gitlab`, `GET /api/sync/status` | signed webhooks; the status (two booleans: which webhooks are configured) without a credential |
+| Code hosts | `POST /api/sync/webhook/github`, `POST /api/sync/webhook/gitlab`, `GET /api/sync/status` | signed webhooks; the status (which webhooks are configured) administrators only |
 | Operations | `GET /health` (`/healthz`), `GET /ready`, `GET /metrics` | no credential |
 | Audit ingest | `POST /v1/events` | only on the `--audit-ingest` listener, mTLS and HMAC |
 

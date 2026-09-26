@@ -25,8 +25,8 @@ change to authorization policy through the configured approval process.
 
 Answered without a credential, because their callers have none: the console
 page and its assets, `GET /api/sso` (the public client's settings; there is no
-client secret), `GET /health`, `GET /ready`, `GET /metrics` (no user, tree or
-token labels) and `GET /api/sync/status` (whether each webhook is configured).
+client secret), `GET /health`, `GET /ready` and `GET /metrics` (no user, tree or
+token labels).
 Webhooks are authenticated by their signature. Everything else requires a
 credential, and a tree or administrative path a caller may not reach answers
 `404`, exactly as one that does not exist.
