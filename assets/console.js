@@ -226,7 +226,7 @@ async function ssoFinish() {
 async function ssoSetup() {
   try {
     const response = await fetch('/api/sso', { cache: 'no-store' });
-    if (!response.ok) return;
+    if (response.status !== 200) return;
     sso = await response.json();
   } catch { return; }
   $('#sso').hidden = false;
@@ -364,13 +364,14 @@ function renderReview(review) {
   const nodes = [summary];
   if (failed) nodes.push(alertBox(`${plural(failed, 'repository', 'repositories')} could not be reviewed. The result below is incomplete.`));
   nodes.push(h('p', { class: 'hint', text: `Workspace ${review.workspace} · compared against ${review.rev} · ${review.depth} ${review.depth === 1 ? 'hop' : 'hops'} deep` }));
-  nodes.push(h('div', { class: 'repo-grid' }, repos.map(renderRepo)));
+  const remote = review.cross_repo_callers || [];
+  nodes.push(h('div', { class: 'repo-grid' }, repos.map(r => renderRepo(r, remote.filter(c => c.tree === r.repo.tree)))));
   const evidence = review.cross_repo_evidence || {};
   if ((evidence.edges || []).length || (evidence.unresolved || []).length) nodes.push(renderEvidence(evidence));
   return nodes;
 }
 
-function renderRepo({ repo, data, error }) {
+function renderRepo({ repo, data, error }, remote = []) {
   if (error) {
     return h('article', { class: 'card repo' },
       h('div', { class: 'card-head' }, h('h2', {}, repo.tree, badge(repo.status === 502 ? 'Not answering' : 'Failed', 'bad'))),
@@ -390,6 +391,14 @@ function renderRepo({ repo, data, error }) {
       ` (${miss.together} of ${miss.commits} commits) and is not part of this change`)));
   }
 
+  // A changed handler another repository of the workspace calls over HTTP.
+  for (const entry of remote) {
+    const trees = [...new Set(entry.callers.map(c => c.tree))];
+    reasons.push(h('li', {}, h('span', {}, h('code', { text: entry.handler }),
+      ` is requested from ${trees.join(', ')} (${plural(entry.callers.length, 'call site')})`)));
+  }
+  const remoteCallers = remote.flatMap(entry => entry.callers.map(c => `${c.tree}: ${c.sender}`));
+
   const hops = (data.hops || []).filter(hop => (hop.symbols || []).length);
   return h('article', { class: 'card repo' },
     h('div', { class: 'card-head' },
@@ -407,9 +416,12 @@ function renderRepo({ repo, data, error }) {
         (data.files_without_known_symbols || []).length ? chips(data.files_without_known_symbols, 8) : null),
       h('div', {},
         h('div', { class: 'section-label', text: 'Affected code' }),
+        remoteCallers.length ? h('div', { class: 'hop' },
+          h('div', { class: 'hop-title', text: `Other repositories · ${plural(remoteCallers.length, 'request')}` }),
+          chips([...new Set(remoteCallers)], 10)) : null,
         hops.length ? hops.map(hop => h('div', { class: 'hop' },
           h('div', { class: 'hop-title', text: `${hop.hop === 1 ? 'Direct' : `${hop.hop} hops away`} · ${plural(hop.symbols.length, 'symbol')}` }),
-          chips(hop.symbols, 10))) : h('p', { class: 'empty-note', text: 'Nothing depends on the changed symbols.' }))));
+          chips(hop.symbols, 10))) : remoteCallers.length ? null : h('p', { class: 'empty-note', text: 'Nothing depends on the changed symbols.' }))));
 }
 
 function renderEvidence(evidence) {
