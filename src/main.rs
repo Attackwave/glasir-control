@@ -54,6 +54,8 @@ OPTIONS
   --listen <addr>            Where to accept requests (default: 127.0.0.1:8800)
   --rights <file>            Trees and grants file (default: ./glasir-rights.tsv)
   --tokens <file>            Per-user tokens file (default: ./glasir.tokens)
+  --policy-proposals <dir>   Where console policy proposals are kept (default: ./glasir-policy-proposals)
+  --cross-repo-evidence <file> A glasir.cross-repo-report.v1 document to serve with workspace reviews
   --audit <file>             Audit log destination (default: ./glasir-control-audit.jsonl)
   --audit-key-file <file>    ≥32-byte key for a signed, verifiable audit chain
   --audit-remote-url <url>   mTLS HTTPS append-only audit ingest endpoint
@@ -109,13 +111,17 @@ ENDPOINTS
   GET  /api/session              Who the credential belongs to, and whether it is admin
   GET  /api/sso                  Console sign-on settings (public client, no secret); 204 without them
   GET  /api/admin/policy/proposals  Administrator-only proposal list and active policy
-  GET  /health                    Health check & system status for load balancers
+  POST /api/admin/policy/proposals  Administrator-only: propose a new policy
+  GET  /api/admin/policy/proposals/<id>  One proposal with its diff against the active policy
+  POST /api/admin/policy/proposals/<id>/approve  A different administrator activates it
+  GET  /health, /healthz          Health check & system status for load balancers
   GET  /ready                     Readiness probe; fails closed on unusable identity or stale rights
   GET  /metrics                   Prometheus operational metrics
   POST /api/sync/webhook/github   GitHub webhook listener (member/collaborator events)
   POST /api/sync/webhook/gitlab   GitLab webhook listener (member events)
   GET  /api/sync/status           Code-host sync status
-  GET  /api/workspaces/<name>/evidence  Authorized cross-repository contract evidence
+  GET  /api/cross-repo/evidence   Administrator-only: the whole --cross-repo-evidence report
+  POST /v1/events                 Audit ingest (--audit-ingest listener only, mTLS + HMAC)
 ";
 
 struct Config {

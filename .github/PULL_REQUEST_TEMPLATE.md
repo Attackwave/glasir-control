@@ -5,9 +5,8 @@ Describe the problem and the intended change.
 ## Verification
 
 - [ ] Tests or checks added or updated
-- [ ] `cargo fmt --check` passes
-- [ ] `cargo clippy --locked -- -D warnings` passes
-- [ ] `cargo test --locked` passes
+- [ ] The checks in [CONTRIBUTING.md](../CONTRIBUTING.md) pass, `check.sh` included
+- [ ] Console changes checked in a browser, not only by the scripts
 - [ ] Production Kustomize overlay renders when deployment files changed
 
 ## Security and operations
