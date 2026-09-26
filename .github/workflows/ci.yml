@@ -62,6 +62,12 @@ jobs:
       # webhooks, the console, audit, and a real OIDC signature end to end.
       - name: acceptance suite
         run: GLASIR="$GITHUB_WORKSPACE/target/core-integration/release/glasir" bash check.sh
+      # The sign-on flow runs in the page, so only a browser can test it.
+      - name: console single sign-on in a browser
+        run: |
+          npm install --no-save --prefix "$RUNNER_TEMP/pw" playwright@1.61.1
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+          NODE_PATH="$RUNNER_TEMP/pw/node_modules" bash scripts/test-console-sso.sh
 
   # A dependency under a licence about.toml does not accept fails here, in the
   # pull request, rather than at the release tag.

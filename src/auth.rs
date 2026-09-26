@@ -220,6 +220,79 @@ impl Oidc {
     }
 }
 
+/// Console single sign-on: a public OIDC client using Authorization Code with
+/// PKCE. The browser holds the resulting token in memory; Control validates it
+/// through [`Oidc`] like any other bearer token.
+#[derive(Clone, Debug)]
+pub struct Sso {
+    client_id: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    scope: String,
+    /// `scheme://host[:port]` of the token endpoint, for the console's CSP.
+    pub token_origin: String,
+}
+
+impl Sso {
+    pub fn new(
+        client_id: String,
+        authorization_endpoint: String,
+        token_endpoint: String,
+        scope: String,
+    ) -> Result<Sso, String> {
+        origin_of(&authorization_endpoint).ok_or_else(|| {
+            format!("--oidc-authorization-endpoint is not an https URL: {authorization_endpoint}")
+        })?;
+        let token_origin = origin_of(&token_endpoint).ok_or_else(|| {
+            format!("--oidc-token-endpoint is not an https URL: {token_endpoint}")
+        })?;
+        if client_id.is_empty() || scope.is_empty() {
+            return Err("--oidc-client-id and --oidc-scope must not be empty".into());
+        }
+        Ok(Sso {
+            client_id,
+            authorization_endpoint,
+            token_endpoint,
+            scope,
+            token_origin,
+        })
+    }
+
+    pub fn public_json(&self) -> String {
+        serde_json::json!({
+            "client_id": self.client_id,
+            "authorization_endpoint": self.authorization_endpoint,
+            "token_endpoint": self.token_endpoint,
+            "scope": self.scope,
+        })
+        .to_string()
+    }
+}
+
+/// The origin of an https URL, or of an http one on loopback for a local
+/// identity provider. The result is written into a CSP header, so anything
+/// but a plain host and port is refused.
+fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority
+        .rsplit_once(':')
+        .map_or(authority, |(host, port)| {
+            if port.bytes().all(|b| b.is_ascii_digit()) {
+                host
+            } else {
+                authority
+            }
+        });
+    let plain = !authority.is_empty()
+        && authority
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b));
+    let loopback = matches!(host, "localhost" | "127.0.0.1" | "[::1]");
+    (plain && (scheme == "https" || (scheme == "http" && loopback)))
+        .then(|| format!("{scheme}://{authority}"))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Identity {
     pub subject: String,
@@ -528,6 +601,43 @@ mod tests {
         let none = format!("eyJhbGciOiJub25lIiwia2lkIjoiazEifQ.{payload}.");
         assert_eq!(identify(&none), None, "alg none must be refused");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sso_endpoints_must_be_https_and_yield_a_plain_origin() {
+        assert_eq!(
+            origin_of("https://idp.example/realms/a/token").as_deref(),
+            Some("https://idp.example")
+        );
+        assert_eq!(
+            origin_of("https://idp.example:8443/t?x=1").as_deref(),
+            Some("https://idp.example:8443")
+        );
+        assert_eq!(
+            origin_of("http://localhost:8080/token").as_deref(),
+            Some("http://localhost:8080")
+        );
+        assert_eq!(
+            origin_of("http://idp.example/token"),
+            None,
+            "plain http off loopback"
+        );
+        assert_eq!(
+            origin_of("https://idp.example; script-src *"),
+            None,
+            "CSP injection"
+        );
+        assert_eq!(origin_of("https://user@idp.example/token"), None);
+        assert_eq!(origin_of("javascript:alert(1)"), None);
+        let sso = Sso::new(
+            "console".into(),
+            "https://idp.example/auth".into(),
+            "https://login.example/token".into(),
+            "openid".into(),
+        )
+        .unwrap();
+        assert_eq!(sso.token_origin, "https://login.example");
+        assert!(sso.public_json().contains(r#""client_id":"console""#));
     }
 
     #[test]

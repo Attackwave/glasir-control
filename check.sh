@@ -175,6 +175,8 @@ case "$LIST" in *'"active_rights":'*'"proposals":[]'*) ok "an administrator list
 review() { curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8800/api/review/impact -H "Authorization: Bearer tok-anna" -d "{\"workspace\":\"none\",\"rev\":\"$1\"}"; }
 is "a revision that is an option is refused" 400 "$(review '--output')"
 is "an ancestor revision is accepted" 404 "$(review 'HEAD~1')"
+is "the console answers a sign-on return" 200 "$(curl -s -o /dev/null -w '%{http_code}' 'localhost:8800/review?code=SIGNONCODE&state=s')"
+is "no sign-on without its settings" 404 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/sso)"
 
 echo "code-host sync via github webhook"
 # clara has no access to alpha initially
@@ -241,6 +243,7 @@ if [ -f "$AUDIT_LOG" ]; then
   grep -q '"who":"bruno"' "$AUDIT_LOG" && ok "audit log captured user identity" || fail "no bruno in audit log"
   grep -q '"tree":"beta"' "$AUDIT_LOG" && ok "audit log captured tree" || fail "no beta tree in audit log"
   grep -q '"path":"/health"' "$AUDIT_LOG" && ok "audit log captured health probes" || fail "no /health in audit log"
+  grep -q 'SIGNONCODE' "$AUDIT_LOG" && fail "a sign-on code reached the audit log" || ok "no sign-on code in the audit log"
 else
   fail "audit log file was not created"
 fi
@@ -264,7 +267,10 @@ jwt() { # jwt <sub> <exp>
   --oidc-issuer https://idp.test \
   --oidc-audience glasir-control \
   --audit "$WORK/oidc-audit.jsonl" \
-  --oidc-jwks "$WORK/jwks.json" >/dev/null 2>&1 &
+  --oidc-jwks "$WORK/jwks.json" \
+  --oidc-client-id console \
+  --oidc-authorization-endpoint https://idp.test/authorize \
+  --oidc-token-endpoint https://login.idp.test/token >/dev/null 2>&1 &
 PIDS="$PIDS $!"
 sleep 2
 oidc() { curl -s -o /dev/null -w '%{http_code}' -X POST "localhost:8801/mcp/$1" -H "Authorization: Bearer $2" -d "$Q"; }
@@ -274,6 +280,8 @@ is "a signed token is refused another tree" 404 "$(oidc alpha "$GOOD")"
 is "an expired token is refused" 401 "$(oidc beta "$(jwt bruno 1000000000)")"
 is "a changed signature is refused" 401 "$(oidc beta "${GOOD%?}$([ "${GOOD: -1}" = A ] && echo B || echo A)")"
 is "a static credential does not bypass oidc" 401 "$(oidc beta tok-bruno)"
+case "$(curl -s localhost:8801/api/sso)" in *'"client_id":"console"'*'"token_endpoint":"https://login.idp.test/token"'*) ok "the console learns its sign-on settings" ;; *) fail "no sign-on settings" ;; esac
+case "$(curl -s -D - -o /dev/null localhost:8801/review)" in *"connect-src 'self' https://login.idp.test;"*) ok "CSP admits the token endpoint and nothing else" ;; *) fail "CSP lacks the token endpoint" ;; esac
 
 echo
 if [ "$FAILED" = 0 ]; then echo "all checks passed"; else echo "FAILURES"; fi
