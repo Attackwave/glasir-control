@@ -399,6 +399,43 @@ pub fn sha256_hex(msg: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    // A real RS256 token against a real key, as an identity provider sends it.
+    // Nothing verified a signature before, so a crypto backend missing from
+    // jsonwebtoken 10 compiled cleanly and refused every OIDC sign-in.
+    #[test]
+    fn an_oidc_token_signed_by_the_configured_key_is_accepted() {
+        const N: &str = "3p45w6UM5g-8l-DeTbtQhxx4lTnDT1O8ffTaXqqQ8Fkh-A5lm5znp6hmLRuOVoFNiedE4iF08njF9B17yWlFCfmGo4_AXnxI9E38Q9Kc4MqMqMKE0vvSSefoNa5AmdWRSTwQ3qkenMri-IBnhRk8HSdT_tZSTHZq7XKRzegO_5Ayg5p_5dGFvlSxFHRBxuloZQwCU_prJgIS61vLaRDMbMKk23TaHPG4kZXtMPSAAeXeVTlGT_EIFIbqXSS-EGupoA3qfIoSaDiDp3wDAz_9kJsjilZJQHv7o2tMJHLnNXo8fPp2iLBKO5-mmHJt3SP0QwDBYUI4R2P3l3GKM3QW1w";
+        const TOKEN: &str = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5IiwidHlwIjoiSldUIn0.eyJpc3MiOiJodHRwczovL2lkcC5leGFtcGxlIiwiYXVkIjoiZ2xhc2lyLWNvbnRyb2wiLCJzdWIiOiJtYXJpYV9rZWxsZXIiLCJncm91cHMiOlsiaWRwLXBsYXRmb3JtLXRlYW0iXSwiZXhwIjo0MTAyNDQ0ODAwfQ.TuR8VI-kcn7LTjJ5KsOBV7zzoNJRkjUvJRJXzBjDc_C_RMU-QsOfAW-xp-8dEAOiSstf2Zie79nF0dzG9P39xIq6QRP7zK2IHxz7DbDhB5t8AbS51VMv_twiNqZFq5JqWSOYtQRuMoFYcQu0nGMC9p-GFPMmK3GDO85NiC01l9FR_VMiTWThYskdctJp7uKiy1r-C6l9ecnPVzp22c4AmMNC8ruO1qljA8JkJynxX4rfiN9n7lADwyxdJQ5idxSvVYxLT9VAtGBTY4Uq6jgq7ZHQ75L-8YD-TS4IHiigsgmFGG7DJNAJQvHoLo-Q0rHuG2pdEAQ3zpZDV-Yb-dRhMA";
+        let dir = std::env::temp_dir().join(format!("glasir-oidc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let jwks = dir.join("jwks.json");
+        std::fs::write(
+            &jwks,
+            format!(r#"{{"keys":[{{"kty":"RSA","kid":"test-key","n":"{N}","e":"AQAB"}}]}}"#),
+        )
+        .unwrap();
+        let oidc = Oidc::new(
+            "https://idp.example".into(),
+            "glasir-control".into(),
+            "sub".into(),
+            "groups".into(),
+            jwks,
+        );
+        assert_eq!(
+            oidc.identify_with_groups(Some(TOKEN)),
+            Some(Identity {
+                subject: "maria_keller".into(),
+                groups: vec!["idp-platform-team".into()],
+            })
+        );
+        // One changed character in the signature must be refused.
+        let mut forged = TOKEN.to_string();
+        let last = forged.pop().unwrap();
+        forged.push(if last == 'A' { 'B' } else { 'A' });
+        assert_eq!(oidc.identify_with_groups(Some(&forged)), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn sha256_matches_the_published_vectors() {
         // FIPS 180-4. Everything else here trusts this: a hash that is merely
