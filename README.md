@@ -271,8 +271,8 @@ These endpoints do not grant access to an individual repository merely because
 its name appears in a workspace.
 
 A workspace review also joins HTTP across its repositories. Each Core reports
-the routes it serves and the requests it sends (`http_surface`, Glasir 0.4 and
-later); Control matches a request in one tree to a route in another by verb
+the routes it serves and the requests it sends (`http_surface`, in Glasir
+releases after 0.3.0); Control matches a request in one tree to a route in another by verb
 and path segments, the most specific route winning, as within a tree. A
 changed handler lists its callers from the other repositories
 (`cross_repo_callers`), and the console shows them beside the in-repository
