@@ -84,6 +84,10 @@ OPTIONS
   --oidc-jwks <file>         Locally refreshed JWKS document for the issuer
   --oidc-subject-claim <key> JWT claim used as the rights identity (default: sub)
   --oidc-groups-claim <key>  JWT array claim mapped through `group` policy entries (default: groups)
+  --oidc-client-id <id>      Public client for console single sign-on (Authorization Code + PKCE)
+  --oidc-authorization-endpoint <url> The issuer's authorization endpoint, for console sign-on
+  --oidc-token-endpoint <url> The issuer's token endpoint, for console sign-on
+  --oidc-scope <scopes>      Scopes the console requests (default: openid)
   --github-secret <secret>   Webhook secret for GitHub HMAC-SHA256 signature verification
   --gitlab-secret <secret>   Webhook secret token for GitLab webhook verification
   --sync-grant <user>:<tree> Programmatically add user grant to rights file and exit
@@ -102,6 +106,7 @@ ENDPOINTS
   GET  /review, /admin            Browser console: impact review, access review, audit
                                  log, policy changes (token stays in tab memory)
   GET  /api/session              Who the credential belongs to, and whether it is admin
+  GET  /api/sso                  Console sign-on settings (public client, no secret); 404 without them
   GET  /api/admin/policy/proposals  Administrator-only proposal list and active policy
   GET  /health                    Health check & system status for load balancers
   GET  /ready                     Readiness probe; fails closed on unusable identity or stale rights
@@ -122,6 +127,7 @@ struct Config {
     active_conns: Arc<AtomicUsize>,
     allowed_origin: Option<String>,
     oidc: Option<auth::Oidc>,
+    sso: Option<auth::Sso>,
     sync_max_age: Option<std::time::Duration>,
     sync_interval: Option<std::time::Duration>,
     backend_tls: Option<backend_tls::BackendTls>,
@@ -320,6 +326,33 @@ fn main() -> std::io::Result<()> {
             std::process::exit(2);
         }
     };
+    let sso = match (
+        opt_val("--oidc-client-id"),
+        opt_val("--oidc-authorization-endpoint"),
+        opt_val("--oidc-token-endpoint"),
+    ) {
+        (None, None, None) => None,
+        (Some(client_id), Some(authorization_endpoint), Some(token_endpoint)) if oidc.is_some() => {
+            match auth::Sso::new(
+                client_id,
+                authorization_endpoint,
+                token_endpoint,
+                opt_val("--oidc-scope").unwrap_or_else(|| "openid".into()),
+            ) {
+                Ok(sso) => Some(sso),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        _ => {
+            eprintln!(
+                "--oidc-client-id, --oidc-authorization-endpoint and --oidc-token-endpoint must be supplied together, with --oidc-issuer"
+            );
+            std::process::exit(2);
+        }
+    };
     let sync_max_age = match opt_val("--sync-max-age") {
         Some(value) => match value.parse::<u64>() {
             Ok(0) | Err(_) => {
@@ -415,6 +448,7 @@ fn main() -> std::io::Result<()> {
         active_conns: active_conns.clone(),
         allowed_origin: opt_val("--allowed-origin"),
         oidc,
+        sso,
         sync_max_age,
         sync_interval,
         backend_tls,
@@ -1054,17 +1088,31 @@ glasir_control_permission_mirror_fresh {}\n",
 
     // One console answers both paths; the page opens the matching section.
     if (req.path == "/review" || req.path == "/admin") && req.method == "GET" {
-        return respond_ui(&mut stream, "text/html; charset=utf-8", CONSOLE_HTML);
+        return respond_ui(
+            &mut stream,
+            "text/html; charset=utf-8",
+            CONSOLE_HTML,
+            cfg.sso.as_ref(),
+        );
     }
     if req.path == "/console.css" && req.method == "GET" {
-        return respond_ui(&mut stream, "text/css; charset=utf-8", CONSOLE_CSS);
+        return respond_ui(&mut stream, "text/css; charset=utf-8", CONSOLE_CSS, None);
     }
     if req.path == "/console.js" && req.method == "GET" {
         return respond_ui(
             &mut stream,
             "application/javascript; charset=utf-8",
             CONSOLE_JS,
+            None,
         );
+    }
+    // The console's sign-on settings. A public client has no secret, so this
+    // is answered before authentication, like the page itself.
+    if req.path == "/api/sso" && req.method == "GET" {
+        return match &cfg.sso {
+            Some(sso) => respond_json(&mut stream, 200, "200 OK", &sso.public_json()),
+            None => respond_json(&mut stream, 404, "404 Not Found", "{}"),
+        };
     }
 
     // Who the presented credential belongs to, so the console can greet the
@@ -1752,10 +1800,18 @@ const CONSOLE_HTML: &str = include_str!("../assets/console.html");
 const CONSOLE_CSS: &str = include_str!("../assets/console.css");
 const CONSOLE_JS: &str = include_str!("../assets/console.js");
 
-fn respond_ui(stream: &mut TcpStream, content_type: &str, body: &str) -> std::io::Result<()> {
+fn respond_ui(
+    stream: &mut TcpStream,
+    content_type: &str,
+    body: &str,
+    sso: Option<&auth::Sso>,
+) -> std::io::Result<()> {
+    // The page redeems its sign-on code at the issuer's token endpoint, so
+    // that one origin, and no other, joins connect-src.
+    let token_origin = sso.map_or(String::new(), |sso| format!(" {}", sso.token_origin));
     write!(
         stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'{token_origin}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )?;
     stream.flush()

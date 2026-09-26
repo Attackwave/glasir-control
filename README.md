@@ -235,6 +235,27 @@ by automation:
 - **Policy changes** (administrators) — proposals with a line diff against the
   active policy; the author cannot approve their own proposal.
 
+With OIDC configured, the console can also sign users in through the identity
+provider: Authorization Code with PKCE, as a public client without a secret.
+Register a client for it, allow the redirect URIs `https://<control>/review`
+and `https://<control>/admin`, and make sure its access tokens carry the
+audience Control checks. Then add:
+
+```bash
+glasir-control ... --oidc-issuer ... --oidc-audience ... --oidc-jwks ... \
+  --oidc-client-id glasir-console \
+  --oidc-authorization-endpoint https://login.example.com/realms/engineering/protocol/openid-connect/auth \
+  --oidc-token-endpoint https://login.example.com/realms/engineering/protocol/openid-connect/token
+```
+
+The page redeems the code at the token endpoint itself, so that endpoint's
+origin is the only one added to the console's `connect-src`, and the identity
+provider must allow the console's origin for CORS. The access token stays in
+the tab's memory; only the PKCE verifier and state survive the redirect, in
+`sessionStorage`, and are removed when the user returns. `--oidc-scope`
+changes the requested scopes (default `openid`). Both endpoints must be
+`https`, except on loopback.
+
 Pass the URL the console is served under with `--allowed-origin` (for example
 `--allowed-origin https://control.example.com`). The browser sends it with
 every write, and Control refuses any origin it was not told about — deriving

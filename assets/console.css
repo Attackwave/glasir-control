@@ -116,6 +116,10 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 }
 .signin-card h1 { margin-top: 8px; }
 .signin-card p { margin: 0; }
+.signin-card #sso { display: grid; gap: 16px; }
+.signin-card #sso[hidden] { display: none; }
+.divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+.divider::before, .divider::after { content: ''; flex: 1; border-top: 1px solid var(--border); }
 
 /* ---- Shell ---------------------------------------------------------- */
 .app { display: grid; grid-template-columns: 240px 1fr; min-height: 100%; }

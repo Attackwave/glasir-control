@@ -132,23 +132,105 @@ async function signIn(event) {
   error.hidden = true;
   button.disabled = true;
   button.textContent = 'Signing in…';
-  session.token = input.value.trim();
   try {
-    const me = await api('/api/session');
-    session.user = me.user;
-    session.admin = !!me.admin;
+    await begin(input.value.trim());
     input.value = '';
-    startApp();
   } catch (e) {
-    session.token = null;
-    error.textContent = e.status === 401
+    showSigninError(e.status === 401
       ? 'This token was not accepted. Check it, or ask your administrator for a new one.'
-      : 'The instance could not be reached. Try again in a moment.';
-    error.hidden = false;
+      : 'The instance could not be reached. Try again in a moment.');
   } finally {
     button.disabled = false;
     button.textContent = 'Sign in';
   }
+}
+
+// Accepts a token for this tab if the instance does: the one step both the
+// token form and single sign-on end in.
+async function begin(token) {
+  session.token = token;
+  try {
+    const me = await api('/api/session');
+    session.user = me.user;
+    session.admin = !!me.admin;
+    startApp();
+  } catch (e) {
+    session.token = null;
+    throw e;
+  }
+}
+
+function showSigninError(text) {
+  const error = $('#signin-error');
+  error.textContent = text;
+  error.hidden = false;
+}
+
+/* ---- Single sign-on (OIDC Authorization Code + PKCE) ------------------ */
+// The verifier and state survive the redirect in sessionStorage; the access
+// token never leaves `session`.
+
+let sso = null;
+
+const b64url = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes)))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const randomString = n => b64url(crypto.getRandomValues(new Uint8Array(n)));
+const redirectUri = () => location.origin + location.pathname;
+
+async function ssoStart() {
+  const verifier = randomString(32);
+  const state = randomString(16);
+  const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+  sessionStorage.setItem('glasir-sso', JSON.stringify({ verifier, state }));
+  const url = new URL(sso.authorization_endpoint);
+  for (const [key, value] of Object.entries({
+    response_type: 'code', client_id: sso.client_id, redirect_uri: redirectUri(), scope: sso.scope,
+    state, code_challenge: challenge, code_challenge_method: 'S256',
+  })) url.searchParams.set(key, value);
+  location.assign(url);
+}
+
+async function ssoFinish() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has('code') && !params.has('error')) return;
+  history.replaceState(null, '', location.pathname + location.hash);
+  const pending = JSON.parse(sessionStorage.getItem('glasir-sso') || 'null');
+  sessionStorage.removeItem('glasir-sso');
+  if (params.has('error')) {
+    showSigninError(`Single sign-on failed: ${params.get('error_description') || params.get('error')}`);
+    return;
+  }
+  if (!pending || params.get('state') !== pending.state) {
+    showSigninError('Single sign-on failed: the answer does not belong to this sign-in. Try again.');
+    return;
+  }
+  try {
+    const response = await fetch(sso.token_endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code', code: params.get('code'), redirect_uri: redirectUri(),
+        client_id: sso.client_id, code_verifier: pending.verifier,
+      }),
+    });
+    const tokens = await response.json();
+    if (!response.ok || !tokens.access_token) throw new Error(tokens.error_description || tokens.error || response.status);
+    await begin(tokens.access_token);
+  } catch (e) {
+    showSigninError(e.status === 401
+      ? 'Your identity provider signed you in, but this instance does not accept the token. Ask your administrator.'
+      : `Single sign-on failed: ${e.message}`);
+  }
+}
+
+async function ssoSetup() {
+  try {
+    const response = await fetch('/api/sso', { cache: 'no-store' });
+    if (!response.ok) return;
+    sso = await response.json();
+  } catch { return; }
+  $('#sso').hidden = false;
+  await ssoFinish();
 }
 
 function signOut(message) {
@@ -634,6 +716,7 @@ function newProposal() {
 
 $('#signin-form').addEventListener('submit', signIn);
 $('#signout').addEventListener('click', () => signOut());
+$('#sso-button').addEventListener('click', ssoStart);
 $('#review-form').addEventListener('submit', runReview);
 $('#access-filter').addEventListener('input', renderAccess);
 $('#access-refresh').addEventListener('click', loadAccess);
@@ -646,3 +729,4 @@ window.addEventListener('hashchange', route);
 checkHealth();
 setInterval(checkHealth, 30000);
 $('#token').focus();
+ssoSetup();

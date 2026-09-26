@@ -82,7 +82,14 @@ pub fn read_request<R: Read>(stream: &mut BufReader<R>) -> std::io::Result<Optio
 
     let mut parts = start.split_whitespace();
     let method = parts.next().unwrap_or_default().to_string();
-    let path = parts.next().unwrap_or_default().to_string();
+    // No route reads a query, and the audit log records the path: a sign-on
+    // code arriving at the console must not be written there.
+    let target = parts.next().unwrap_or_default();
+    let path = target
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_string();
 
     if !["GET", "POST", "HEAD", "OPTIONS"].contains(&method.as_str()) {
         return Err(std::io::Error::other(
