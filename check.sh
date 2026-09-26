@@ -171,6 +171,9 @@ is "session names the user" '{"admin":false,"user":"anna"}' "$SESSION"
 is "session knows an administrator" '{"admin":true,"user":"dora"}' "$(curl -s localhost:8800/api/session -H 'Authorization: Bearer tok-dora')"
 is "session without a credential is refused" 401 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/session)"
 is "proposal list is hidden from a non-administrator" 404 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/admin/policy/proposals -H 'Authorization: Bearer tok-anna')"
+is "sync status needs a credential" 401 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/sync/status)"
+is "sync status is hidden from a non-administrator" 404 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/sync/status -H 'Authorization: Bearer tok-anna')"
+is "an administrator reads the sync status" '{"github_webhook_configured":true,"gitlab_webhook_configured":true}' "$(curl -s localhost:8800/api/sync/status -H 'Authorization: Bearer tok-dora')"
 LIST=$(curl -s localhost:8800/api/admin/policy/proposals -H 'Authorization: Bearer tok-dora')
 case "$LIST" in *'"active_rights":'*'"proposals":[]'*) ok "an administrator lists proposals" ;; *) fail "proposal list: $LIST" ;; esac
 review() { curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8800/api/review/impact -H "Authorization: Bearer tok-anna" -d "{\"workspace\":\"none\",\"rev\":\"$1\"}"; }
