@@ -436,6 +436,100 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    // A key made for this test only, so the claims can vary. The token above
+    // is fixed; this one checks that each claim the validator is configured
+    // with is actually enforced, since a Validation that skips one still
+    // accepts every real token and no other test would notice.
+    const TEST_KEY: &str = "-----BEGIN RSA PRIVATE KEY-----\nMIIEogIBAAKCAQEArMhmnGHsJ56txltkWPK8x2MclKMf9+GKz5GlPO8xqo/1tyea\n41wifhcsGkjjLPZabqkgLoyHxxBH355/tOJ2vWlhEYTfFRidpUuq1052awwxvmlf\nn6B+x2XuxSHbb58RP2fkoeTBD5JPioxDSjjDvTEW0tA4Og7+SjONhZ/GOzkxrRmj\nyha1caPHjfi66f5RVt7Pb+ejHydcg7nz3Tyq4GivkL67ug0C2Ge7v9Ocpz2gJsRR\nWW15wXraqNdE7//A+ff8Fhtb+hP03CI4CzjJ8RmLcf1q+rNASoxCFdJfahPFAz/t\nYfXfW0s7tGLhHrW97Wx8HZ/LTgIZcJShHXBEtQIDAQABAoIBAAMYMLxGxbG89gxK\nKT0tlcN1azbfSAyKuc93Yo/5kbhmDSbLWwsM5KJA/H15BjaRL/Pw6/5hbnIagMsI\nve1JrAo+56nmaQ9p6jLibMwf39+Rb5ejL/7+Ix8jnHfj4Bf675Zk4DOlEu8aNfn7\ngp4C78CE7011xLgHejbufu+gea6oU0PyAKOhgBsgGI81zD8nQob3EaM8UrrjxZOv\nY31kLGuv2meiG53ueMXf1ldsXlCKHotwqb4MvlRtqboxmGNjV8xB5sGDSTZAlves\niZdX08SnXoVPJ+N2ZUh5wEU/BpaIRiWwVbGOOiaF5X/ei11iVFkAo8SINcGc9pBl\nH+iNjGkCgYEA5IzJjqAXdcaTLqkQdcG9t51/OjYzOxW6SpFMkZwz2YOvlN9s2xPm\nIMzXx3dxHy7WblP63935BKA7cSj6YhhJst4BOU6YBdMBfdFsCAXvDVKof1GyRcKB\nM35Kq3fOVeYcVjbV4UiE0oR78m3SOvmGkeoQZmKk9cvgWLYfsEp3Ag0CgYEAwYjx\nyeOSzJc6UuzKSksX1II5/fVIc8SdHWgoGPbl2mOyfJHo+CQkcHJD88oqYqnfaAJl\nutP0LxS1UW4gQzGg961XbsX6J4ZDb5+RG0Wzfj7F2hY44/sCgRNZzH1YNQPAUoHv\nf44XF3i98Sh1AfuXz7yyVzu4hZyVayc/7gEqq0kCgYB9g0/BkuuvU2FK86/Fa6Ob\nrdPMDS3vWcxX3Rm2sZjL8ITBdj3axj/QbY5mzZKDNH6wUlBpFwcFYlWinIV8z6fR\nohf798yHDk04YoU4lsGkiGtemGgV5W587/Nj3USkad3P/wdQVDoVPoqvJV6Z4qTj\nhy6Ae9Xp4pAPR915PDvFFQKBgDuH41AFp381OWSOn77wkFj24d3DWFD79pQ4GLVt\nJNDjf+CfhTjm7SqFi29vDVCiDi1RJ3ergN4GkauFo3jnyCrHcDCLx2HnA9FPFPR9\noTPBHVzzHvbJnECV8jZbjAlqqPr4KvJig6ndoxeOKUe92zm0Qmtg3GaE/tUiEqEk\nTLq5AoGAFVEfnY5YOPgBYDDomOJYh0Uj8N7oEQ536xxYDyHS7AyjIOVgHrLqp/cX\nL1Fyw9XuuB+UOweOpwOlIwgzHizM90vdDMBw9lj5/p2igC0TaJjQ/rH2f3ibbNOq\nVHaEZGguXRdCFus4NSezexBYt5hQSwb8m5L8WNSyn7Q4Xarfkmg=\n-----END RSA PRIVATE KEY-----";
+    const TEST_N: &str = "rMhmnGHsJ56txltkWPK8x2MclKMf9-GKz5GlPO8xqo_1tyea41wifhcsGkjjLPZabqkgLoyHxxBH355_tOJ2vWlhEYTfFRidpUuq1052awwxvmlfn6B-x2XuxSHbb58RP2fkoeTBD5JPioxDSjjDvTEW0tA4Og7-SjONhZ_GOzkxrRmjyha1caPHjfi66f5RVt7Pb-ejHydcg7nz3Tyq4GivkL67ug0C2Ge7v9Ocpz2gJsRRWW15wXraqNdE7__A-ff8Fhtb-hP03CI4CzjJ8RmLcf1q-rNASoxCFdJfahPFAz_tYfXfW0s7tGLhHrW97Wx8HZ_LTgIZcJShHXBEtQ";
+
+    fn sign(alg: Algorithm, kid: &str, claims: Value, key: &jsonwebtoken::EncodingKey) -> String {
+        let mut header = jsonwebtoken::Header::new(alg);
+        header.kid = Some(kid.into());
+        jsonwebtoken::encode(&header, &claims, key).unwrap()
+    }
+
+    #[test]
+    fn each_configured_claim_is_enforced() {
+        let dir = std::env::temp_dir().join(format!("glasir-oidc-claims-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let jwks = dir.join("jwks.json");
+        std::fs::write(
+            &jwks,
+            format!(r#"{{"keys":[{{"kty":"RSA","kid":"k1","n":"{TEST_N}","e":"AQAB"}}]}}"#),
+        )
+        .unwrap();
+        let oidc = Oidc::new(
+            "https://idp.example".into(),
+            "glasir-control".into(),
+            "sub".into(),
+            "groups".into(),
+            jwks,
+        );
+        let rsa = jsonwebtoken::EncodingKey::from_rsa_pem(TEST_KEY.as_bytes()).unwrap();
+        let claims = |iss: &str, aud: &str, exp: u64| serde_json::json!({"iss": iss, "aud": aud, "sub": "anna", "exp": exp});
+        let good = claims("https://idp.example", "glasir-control", 4_102_444_800);
+        let identify = |token: &str| oidc.identify_with_groups(Some(token)).map(|i| i.subject);
+
+        assert_eq!(
+            identify(&sign(Algorithm::RS256, "k1", good.clone(), &rsa)).as_deref(),
+            Some("anna")
+        );
+        let refused = [
+            (
+                "issuer",
+                sign(
+                    Algorithm::RS256,
+                    "k1",
+                    claims("https://evil.example", "glasir-control", 4_102_444_800),
+                    &rsa,
+                ),
+            ),
+            (
+                "audience",
+                sign(
+                    Algorithm::RS256,
+                    "k1",
+                    claims("https://idp.example", "other-app", 4_102_444_800),
+                    &rsa,
+                ),
+            ),
+            (
+                "expiry",
+                sign(
+                    Algorithm::RS256,
+                    "k1",
+                    claims("https://idp.example", "glasir-control", 1_000_000_000),
+                    &rsa,
+                ),
+            ),
+            (
+                "unknown kid",
+                sign(Algorithm::RS256, "k2", good.clone(), &rsa),
+            ),
+            // The public key as an HMAC secret: the classic algorithm confusion.
+            (
+                "HS256",
+                sign(
+                    Algorithm::HS256,
+                    "k1",
+                    good.clone(),
+                    &jsonwebtoken::EncodingKey::from_secret(TEST_N.as_bytes()),
+                ),
+            ),
+        ];
+        for (what, token) in refused {
+            assert_eq!(identify(&token), None, "{what} must be refused");
+        }
+        // alg "none" with no signature, which jsonwebtoken cannot mint: the
+        // header is {"alg":"none","kid":"k1"}, the payload a valid token's.
+        let valid = sign(Algorithm::RS256, "k1", good, &rsa);
+        let payload = valid.split('.').nth(1).unwrap();
+        let none = format!("eyJhbGciOiJub25lIiwia2lkIjoiazEifQ.{payload}.");
+        assert_eq!(identify(&none), None, "alg none must be refused");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn sha256_matches_the_published_vectors() {
         // FIPS 180-4. Everything else here trusts this: a hash that is merely
