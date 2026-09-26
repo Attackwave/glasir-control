@@ -10,6 +10,7 @@
 # - Non-blocking JSONL audit log verification
 # - Pre-flight configuration validation CLI (--validate)
 # - Code-Host Permission Synchronization (GitHub & GitLab Webhooks + CLI sync)
+# - OIDC sign-in with a real RS256 signature, and no static-token fallback
 set -u
 
 GLASIR=${GLASIR:-../glasir/target/release/glasir}
@@ -243,6 +244,36 @@ if [ -f "$AUDIT_LOG" ]; then
 else
   fail "audit log file was not created"
 fi
+
+echo "oidc sign-in end to end"
+# A real RS256 signature through the running binary. jsonwebtoken 10 once
+# compiled green and panicked on every OIDC sign-in; only a request finds that.
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORK/idp.pem" 2>/dev/null
+N=$(openssl rsa -in "$WORK/idp.pem" -noout -modulus | cut -d= -f2 |
+  python3 -c "import sys,base64; print(base64.urlsafe_b64encode(bytes.fromhex(sys.stdin.read().strip())).rstrip(b'=').decode())")
+printf '{"keys":[{"kty":"RSA","kid":"ci","n":"%s","e":"AQAB"}]}' "$N" > "$WORK/jwks.json"
+jwt() { # jwt <sub> <exp>
+  local input
+  input="$(printf '{"alg":"RS256","kid":"ci","typ":"JWT"}' | b64url).$(printf '{"iss":"https://idp.test","aud":"glasir-control","sub":"%s","exp":%s}' "$1" "$2" | b64url)"
+  printf '%s.%s' "$input" "$(printf %s "$input" | openssl dgst -sha256 -sign "$WORK/idp.pem" -binary | b64url)"
+}
+"$CONTROL" --listen 127.0.0.1:8801 \
+  --rights "$WORK/rights.tsv" \
+  --tokens "$WORK/tokens" \
+  --oidc-issuer https://idp.test \
+  --oidc-audience glasir-control \
+  --audit "$WORK/oidc-audit.jsonl" \
+  --oidc-jwks "$WORK/jwks.json" >/dev/null 2>&1 &
+PIDS="$PIDS $!"
+sleep 2
+oidc() { curl -s -o /dev/null -w '%{http_code}' -X POST "localhost:8801/mcp/$1" -H "Authorization: Bearer $2" -d "$Q"; }
+GOOD=$(jwt bruno 4102444800)
+is "a signed token reaches its tree" 200 "$(oidc beta "$GOOD")"
+is "a signed token is refused another tree" 404 "$(oidc alpha "$GOOD")"
+is "an expired token is refused" 401 "$(oidc beta "$(jwt bruno 1000000000)")"
+is "a changed signature is refused" 401 "$(oidc beta "${GOOD%?}$([ "${GOOD: -1}" = A ] && echo B || echo A)")"
+is "a static credential does not bypass oidc" 401 "$(oidc beta tok-bruno)"
 
 echo
 if [ "$FAILED" = 0 ]; then echo "all checks passed"; else echo "FAILURES"; fi

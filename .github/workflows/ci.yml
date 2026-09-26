@@ -58,6 +58,10 @@ jobs:
         run: cargo build --release --locked --manifest-path glasir-core/Cargo.toml --target-dir target/core-integration
       - name: Core-Control mTLS forwarding integration
         run: GLASIR_CORE_BIN="$GITHUB_WORKSPACE/target/core-integration/release/glasir" bash scripts/test-core-control-mtls.sh
+      # The acceptance suite runs the binaries as users do: routing, revocation,
+      # webhooks, the console, audit, and a real OIDC signature end to end.
+      - name: acceptance suite
+        run: GLASIR="$GITHUB_WORKSPACE/target/core-integration/release/glasir" bash check.sh
 
   # A dependency under a licence about.toml does not accept fails here, in the
   # pull request, rather than at the release tag.
