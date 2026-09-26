@@ -218,11 +218,26 @@ Permissions are **mirrored from code hosts** (GitHub, GitLab), ensuring reposito
 
 ## Review and administration
 
-Control exposes an authenticated browser review console at `GET /review`. The
-console keeps the entered bearer token in browser memory and calls the same
-administrative API used by automation. It can retrieve the secret-free access
-review, inspect the recent audit timeline, and create or approve policy
-proposals.
+Control serves one browser console at `GET /review` and `GET /admin`. It keeps
+the entered bearer token in the tab's memory only and calls the same API used
+by automation:
+
+- **Impact review** — what a change touches across every repository of a
+  workspace: risk and its reasons, changed symbols, dependent code by distance.
+- **Access review** (administrators) — roles, members, mapped IdP groups,
+  direct grants and tool allowlists, filterable and exportable as JSON. Backend
+  credentials never appear.
+- **Audit log** (administrators) — the recent request timeline, filterable by
+  identity, path and outcome.
+- **Policy changes** (administrators) — proposals with a line diff against the
+  active policy; the author cannot approve their own proposal.
+
+Pass the URL the console is served under with `--allowed-origin` (for example
+`--allowed-origin https://control.example.com`). The browser sends it with
+every write, and Control refuses any origin it was not told about — deriving
+it from `Host` would reopen DNS rebinding. The console says so when it is
+missing. Everything it loads comes from the binary itself: no external font,
+script or stylesheet, so it works air-gapped under the strict CSP.
 
 For cross-repository work, `GET /workspaces` lists only workspaces for which
 the caller can access every participating tree. `POST /api/review/impact`
