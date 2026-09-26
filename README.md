@@ -19,6 +19,9 @@ A client reaches a tree at `/mcp/<name>` with its own credential. Everything
 else about Glasir is unchanged — this service knows where a tree is and who may
 see it, never what is in it.
 
+To try it without setting anything up, [`deploy/demo`](deploy/demo) runs Core,
+Control and the console with two real repositories: `docker compose up --build`.
+
 ## Install
 
 Control is a service for operators. Run the signed container image, or a
