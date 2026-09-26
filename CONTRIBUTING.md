@@ -13,13 +13,21 @@ Contributions are accepted through pull requests only; direct changes to
 
 ```sh
 cargo fmt --check
-cargo clippy --locked -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo test --locked
-kubectl kustomize deploy/kubernetes/overlays/production
+cargo build --release --locked
+bash check.sh        # needs a Glasir Core binary: ../glasir built, or GLASIR=<path>
+bash scripts/test-audit-mtls.sh
+GLASIR_CORE_BIN=<core binary> bash scripts/test-core-control-mtls.sh
+NODE_PATH=<dir with playwright> bash scripts/test-console-sso.sh
+kubectl kustomize deploy/kubernetes/overlays/production   # when deployment files changed
 ```
 
-Do not commit generated output, credentials, editor state, or local assistant
-configuration. Local workstation artifacts are excluded globally.
+CI runs the same, with the Core built from its `main` branch. A change that
+needs a new Core feature therefore lands after the Core change.
+
+Do not commit generated output, credentials, editor state, audit records or
+assistant configuration.
 
 ## Pull request expectations
 

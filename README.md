@@ -115,7 +115,7 @@ an explicit role allowlist is fail-closed for every other tool:
 
 ```tsv
 role      analyst  alpha
-role-tool analyst  alpha  query_graph,get_node,shortest_path
+role-tool analyst  alpha  query_graph,explain_node,shortest_path
 member    erin     analyst
 ```
 
@@ -151,7 +151,24 @@ local user snapshot. `tool_access.mode` is deliberately explicit: `all` is
 full MCP access and `allowlist` contains the only permitted tools.
 
 `users.tokens` is the core's own format (`<sha256>\t<name>\t<expiry>`), so an
-operator learns one thing and a later sign-in flow replaces only who writes it.
+operator learns one thing. With OIDC enabled it is not consulted at all: the
+identity provider issues the tokens, and the console can sign users in there.
+
+### Workspaces
+
+A workspace is a named set of trees reviewed together. It is visible only to a
+caller who may reach every tree in it, so a partial grant can neither reveal
+a repository name nor widen access:
+
+```tsv
+workspace          checkout  web,payments,ledger
+workspace-package  checkout  payments-api@2026.09.18,ledger@4.0.0
+```
+
+`workspace-package` names the package versions whose declared contracts
+(`--cross-repo-evidence`, see
+[cross-repository contracts](https://github.com/Attackwave/glasir/blob/main/docs/cross-repo-contracts.md))
+belong to the workspace's reviews.
 
 ### OIDC resource-server mode
 
@@ -265,9 +282,10 @@ script or stylesheet, so it works air-gapped under the strict CSP.
 
 For cross-repository work, `GET /workspaces` lists only workspaces for which
 the caller can access every participating tree. `POST /api/review/impact`
-produces a bounded diff-impact review for an authorised workspace, and
-`GET /api/workspaces/<name>/evidence` returns its declared contract evidence.
-These endpoints do not grant access to an individual repository merely because
+produces a bounded diff-impact review for an authorised workspace, including
+the declared contract evidence of its packages (`cross_repo_evidence`);
+`GET /api/cross-repo/evidence` returns the whole loaded report to
+administrators. These endpoints do not grant access to an individual repository merely because
 its name appears in a workspace.
 
 A workspace review also joins HTTP across its repositories. Each Core reports
@@ -279,6 +297,10 @@ changed handler lists its callers from the other repositories
 dependents. A Core without the tool contributes nothing, and the review still
 answers.
 
+Proposals are kept as files under `--policy-proposals` (default
+`./glasir-policy-proposals`); approving one rewrites the rights file
+atomically, and the live reload applies it on the next request.
+
 The policy file remains the source of truth. Treat review-console proposals as
 an approval workflow around a versioned policy change: review the resulting
 rights change, retain the approval evidence, and use the normal deployment
@@ -286,14 +308,18 @@ process to promote it.
 
 ## Endpoints
 
-* `POST /mcp/<tree>`: Forwards MCP JSON-RPC call to authorized tree backend.
-* `GET  /trees`: Lists caller's visible trees (unauthorized trees are hidden).
-* `GET  /health`: Health and status metrics for orchestrators.
-* `GET  /ready`: Fail-closed readiness for load balancers and Kubernetes.
-* `GET  /metrics`: Prometheus metrics without user, repository or token labels.
-* `POST /api/sync/webhook/github`: GitHub collaborator event webhook listener.
-* `POST /api/sync/webhook/gitlab`: GitLab membership event webhook listener.
-* `GET  /api/sync/status`: Code-host sync configuration status.
+`glasir-control --help` lists every flag and endpoint. By purpose:
+
+| Purpose | Endpoints | Who |
+|---|---|---|
+| MCP | `POST /mcp/<tree>` | any caller the tree is granted to |
+| Discovery | `GET /trees`, `GET /workspaces` | authenticated; only reachable trees and fully reachable workspaces |
+| Review | `POST /api/review/impact` | authenticated, for an authorised workspace |
+| Console | `GET /review`, `GET /admin`, `/console.js`, `/console.css`, `GET /api/session`, `GET /api/sso` | page and sign-on settings without a credential; session with one |
+| Administration | `GET /api/admin/access-review`, `GET /api/admin/audit`, `GET`/`POST /api/admin/policy/proposals`, `GET /api/admin/policy/proposals/<id>`, `POST …/<id>/approve`, `GET /api/cross-repo/evidence` | administrators; everyone else gets `404` |
+| Code hosts | `POST /api/sync/webhook/github`, `POST /api/sync/webhook/gitlab`, `GET /api/sync/status` | signed webhooks; the status (two booleans: which webhooks are configured) without a credential |
+| Operations | `GET /health` (`/healthz`), `GET /ready`, `GET /metrics` | no credential |
+| Audit ingest | `POST /v1/events` | only on the `--audit-ingest` listener, mTLS and HMAC |
 
 ## Transport boundary
 
@@ -328,9 +354,13 @@ keep the public edge TLS separate from this private hop.
 ```bash
 cargo build --release
 cargo test --locked
+bash check.sh                      # acceptance suite; needs ../glasir built, or GLASIR=<core binary>
 bash scripts/test-audit-mtls.sh
-bash scripts/test-core-control-mtls.sh
+GLASIR_CORE_BIN=<core binary> bash scripts/test-core-control-mtls.sh
+NODE_PATH=<dir with playwright> bash scripts/test-console-sso.sh   # console sign-on in Chromium
 ```
+
+CI runs all of them on every pull request.
 
 Release pipelines build platform archives, publish a multi-architecture image,
 attach a CycloneDX SBOM, create provenance, and sign the published manifest
