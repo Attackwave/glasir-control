@@ -1,0 +1,10 @@
+# docker compose up --build, then open http://localhost:8800/review
+services:
+  demo:
+    build: .
+    ports:
+      - "127.0.0.1:8800:8800"  # Control console
+      - "127.0.0.1:7878:7878"  # map of glasir-core
+    environment:
+      CORE_REPO: ${CORE_REPO:-https://github.com/Attackwave/glasir}
+      CONTROL_REPO: ${CONTROL_REPO:-https://github.com/Attackwave/glasir-control}

@@ -1,0 +1,7 @@
+[advisories]
+# RUSTSEC-2023-0071 (rsa, "Marvin"): timing leaks a *private* key through
+# decryption and signing. The rsa crate arrives with jsonwebtoken's
+# `rust_crypto` backend, and Control only verifies identity-provider tokens
+# with their *public* keys — it never decrypts or signs with RSA, so there is
+# no secret whose timing could leak. Revisit if Control ever signs tokens.
+ignore = ["RUSTSEC-2023-0071"]

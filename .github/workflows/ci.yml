@@ -1,0 +1,104 @@
+name: ci
+
+# Once per change: a pull request runs on `pull_request`, and `main` after the
+# merge. Both triggers on every push ran each job twice for every pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # The control plane is a security boundary. A lockfile-resolved build,
+      # lint and vulnerability scan are release requirements, not optional
+      # local hygiene.
+      - name: format
+        run: cargo fmt --check
+      - name: dependency vulnerabilities
+        run: cargo install cargo-audit --locked && cargo audit
+      - name: lint
+        run: cargo clippy --all-targets -- -D warnings
+      - name: unit tests
+        run: cargo test --locked
+      - name: locked release build
+        run: cargo build --release --locked
+      # The release workflow publishes a manifest after the platform images.
+      # Its provenance and signature must bind that manifest, not the removed
+      # single-platform build step.
+      - name: verify release manifest provenance wiring
+        run: |
+          grep -F 'subject-digest:' .github/workflows/release.yml | grep -F 'steps.manifest.outputs.digest'
+          grep -F 'DIGEST:' .github/workflows/release.yml | grep -F 'steps.manifest.outputs.digest'
+          ! grep -F 'steps.push.outputs.digest' .github/workflows/release.yml
+      - name: mTLS audit transport integration
+        run: bash scripts/test-audit-mtls.sh
+      # Test the independently released data plane too. The boundary is where
+      # bearer-token substitution and mutual TLS must work together.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Attackwave/glasir
+          ref: main
+          path: glasir-core
+      - name: build Core integration binary
+        run: cargo build --release --locked --manifest-path glasir-core/Cargo.toml --target-dir target/core-integration
+      - name: Core-Control mTLS forwarding integration
+        run: GLASIR_CORE_BIN="$GITHUB_WORKSPACE/target/core-integration/release/glasir" bash scripts/test-core-control-mtls.sh
+      # The acceptance suite runs the binaries as users do: routing, revocation,
+      # webhooks, the console, audit, and a real OIDC signature end to end.
+      - name: acceptance suite
+        run: GLASIR="$GITHUB_WORKSPACE/target/core-integration/release/glasir" bash check.sh
+      # The sign-on flow runs in the page, so only a browser can test it.
+      - name: console single sign-on in a browser
+        run: |
+          npm install --no-save --prefix "$RUNNER_TEMP/pw" playwright@1.61.1
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+          NODE_PATH="$RUNNER_TEMP/pw/node_modules" bash scripts/test-console-sso.sh
+      # A provider companies run: its login page, CORS on its token
+      # endpoint, and the audience and groups its realm maps.
+      - name: console single sign-on against Keycloak
+        run: NODE_PATH="$RUNNER_TEMP/pw/node_modules" bash scripts/test-console-sso-keycloak.sh
+
+  # A dependency under a licence about.toml does not accept fails here, in the
+  # pull request, rather than at the release tag.
+  licences:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - run: |
+          cargo install cargo-about --locked --features cli
+          cargo about generate --locked --fail about.hbs -o THIRD-PARTY-LICENSES.txt
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: glasir-control:ci
+          platforms: linux/amd64
+      - name: verify hardened runtime
+        run: |
+          test "$(docker image inspect glasir-control:ci --format '{{.Config.User}}')" = "65532:65532"
+          docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m glasir-control:ci --version

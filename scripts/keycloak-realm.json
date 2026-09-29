@@ -1,0 +1,42 @@
+{
+  "realm": "glasir",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "glasir-console",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:18996/review", "http://localhost:18996/admin"],
+      "webOrigins": ["+"],
+      "attributes": { "pkce.code.challenge.method": "S256" },
+      "protocolMappers": [
+        {
+          "name": "audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "glasir-control", "access.token.claim": "true", "id.token.claim": "false" }
+        },
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": { "claim.name": "groups", "full.path": "false", "access.token.claim": "true", "id.token.claim": "false", "userinfo.token.claim": "false" }
+        }
+      ]
+    }
+  ],
+  "groups": [{ "name": "platform-team" }],
+  "users": [
+    {
+      "username": "anna.schmidt",
+      "enabled": true,
+      "email": "anna@example.test",
+      "emailVerified": true,
+      "firstName": "Anna",
+      "lastName": "Test",
+      "credentials": [{ "type": "password", "value": "anna-pass", "temporary": false }],
+      "groups": ["platform-team"]
+    }
+  ]
+}

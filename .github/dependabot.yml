@@ -1,0 +1,14 @@
+# Security updates for Cargo dependencies come from the repository's
+# Dependabot security updates setting. This keeps the pinned action SHAs in
+# the workflows current, one grouped pull request a week.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

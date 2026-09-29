@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+# The Enterprise Acceptance Test Suite (2026 Standards):
+# - Process boundary separation & anti-oracle routing
+# - Zero credential leak
+# - Live hot-reloading (rights & tokens revocation without restarts)
+# - Standard-compliant WWW-Authenticate headers (RFC 6750 / RFC 9728)
+# - Enterprise Security Headers (HSTS, CSP, nosniff, frame-deny)
+# - Security hardening: Path traversal immunity (%2e%2e) & Smuggling protection
+# - Observability: /health endpoint
+# - Non-blocking JSONL audit log verification
+# - Pre-flight configuration validation CLI (--validate)
+# - Code-Host Permission Synchronization (GitHub & GitLab Webhooks + CLI sync)
+# - OIDC sign-in with a real RS256 signature, and no static-token fallback
+# - Cross-repository routes: a client's request to a server in another repository
+set -u
+
+GLASIR=${GLASIR:-../glasir/target/release/glasir}
+CONTROL=./target/release/glasir-control
+# The test mints each data-plane credential from inside its repository. Make
+# the binary path absolute before that `cd`, otherwise the default relative
+# path resolves below the temporary fixture and silently yields an empty token.
+GLASIR=$(cd "$(dirname "$GLASIR")" && pwd)/$(basename "$GLASIR")
+WORK=$(mktemp -d)
+FAILED=0
+
+cleanup() {
+  [ -n "${PIDS:-}" ] && kill $PIDS 2>/dev/null
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+ok()   { echo "  ok    $1"; }
+fail() { echo "  FAIL  $1"; FAILED=1; }
+is()   { # is <what> <expected> <actual>
+  if [ "$2" = "$3" ]; then ok "$1"; else fail "$1 — expected $2, got $3"; fi
+}
+
+cargo build --release >/dev/null
+
+if [ ! -x "$GLASIR" ]; then
+  echo "building core binary at $GLASIR..."
+  (cd ../glasir && cargo build --release) >/dev/null 2>&1 || true
+fi
+
+if [ ! -x "$GLASIR" ]; then
+  echo "need the core binary at $GLASIR (set GLASIR=... to override)" >&2
+  exit 2
+fi
+
+mkdir -p "$WORK/alpha/src" "$WORK/beta/src"
+cat > "$WORK/alpha/src/lib.rs" <<'RS'
+/// Alpha's payroll calculation.
+fn alpha_payroll() -> u32 { alpha_helper() }
+fn alpha_helper() -> u32 { 42 }
+RS
+cat > "$WORK/beta/src/lib.rs" <<'RS'
+/// Beta's rocket telemetry.
+fn beta_telemetry() -> u32 { beta_helper() }
+fn beta_helper() -> u32 { 7 }
+RS
+
+"$GLASIR" analyse "$WORK/alpha" >/dev/null 2>&1
+"$GLASIR" analyse "$WORK/beta"  >/dev/null 2>&1
+ALPHA_BACKEND_TOKEN=$(cd "$WORK/alpha" && "$GLASIR" token add control 2>/dev/null)
+BETA_BACKEND_TOKEN=$(cd "$WORK/beta" && "$GLASIR" token add control 2>/dev/null)
+"$GLASIR" serve "$WORK/alpha" --http 7001 --behind-control-plane >/dev/null 2>&1 &
+"$GLASIR" serve "$WORK/beta"  --http 7002 --behind-control-plane >/dev/null 2>&1 &
+PIDS="$! $(jobs -p | tr '\n' ' ')"
+
+python3 - > "$WORK/tokens" <<'PY'
+import hashlib
+for name, tok in [("anna", "tok-anna"), ("bruno", "tok-bruno"), ("clara", "tok-clara"), ("dora", "tok-dora"), ("erik", "tok-erik"), ("fritz", "tok-fritz")]:
+    print(f"{hashlib.sha256(tok.encode()).hexdigest()}\t{name}\t0")
+PY
+
+printf 'tree\talpha\t127.0.0.1:7001\t%s\n' "$ALPHA_BACKEND_TOKEN" >  "$WORK/rights.tsv"
+printf 'tree\tbeta\t127.0.0.1:7002\t%s\n' "$BETA_BACKEND_TOKEN"  >> "$WORK/rights.tsv"
+printf 'grant\tanna\talpha\n'                    >> "$WORK/rights.tsv"
+printf 'grant\tbruno\tbeta\n'                    >> "$WORK/rights.tsv"
+printf 'role\tadmin\talpha\n'                     >> "$WORK/rights.tsv"
+printf 'member\tdora\tadmin\n'                    >> "$WORK/rights.tsv"
+printf 'tenant\tpayroll\talpha\n'                 >> "$WORK/rights.tsv"
+printf 'tenant-admin\terik\tpayroll\n'            >> "$WORK/rights.tsv"
+printf 'tenant-admin\tfritz\tpayroll\n'           >> "$WORK/rights.tsv"
+printf 'github:acme/alpha\talpha\n' > "$WORK/repo-map.tsv"
+printf 'gitlab:acme\tbeta\n' >> "$WORK/repo-map.tsv"
+
+echo "pre-flight validation"
+"$CONTROL" --validate --rights "$WORK/rights.tsv" --tokens "$WORK/tokens" >/dev/null 2>&1
+is "validate passes for valid config" "0" "$?"
+
+printf 'malformed_line_with_no_tabs\n' > "$WORK/bad_rights.tsv"
+if "$CONTROL" --validate --rights "$WORK/bad_rights.tsv" --tokens "$WORK/tokens" >/dev/null 2>&1; then
+  fail "validate accepted malformed config"
+else
+  ok "validate catches malformed config"
+fi
+
+AUDIT_LOG="$WORK/audit.jsonl"
+GH_SECRET="github-secret-123"
+GL_SECRET="gitlab-secret-456"
+
+"$CONTROL" --listen 127.0.0.1:8800 \
+  --rights "$WORK/rights.tsv" \
+  --tokens "$WORK/tokens" \
+  --audit "$AUDIT_LOG" \
+  --policy-proposals "$WORK/proposals" \
+  --repo-map "$WORK/repo-map.tsv" \
+  --github-secret "$GH_SECRET" \
+  --gitlab-secret "$GL_SECRET" >/dev/null 2>&1 &
+PIDS="$PIDS $!"
+sleep 4
+
+Q='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_graph","arguments":{"query":"payroll telemetry helper"}}}'
+code() { curl -s -o /dev/null -w '%{http_code}' -X POST "localhost:8800/mcp/$1" -H "Authorization: Bearer $2" -d "$Q"; }
+body() { curl -s -X POST "localhost:8800/mcp/$1" -H "Authorization: Bearer $2" -d "$Q"; }
+
+echo "observability & health"
+HEALTH=$(curl -s "localhost:8800/health")
+case "$HEALTH" in *'"status":"ok"'*) ok "/health reports status ok" ;; *) fail "/health failed: $HEALTH" ;; esac
+case "$HEALTH" in *'"configured_trees":2'*) ok "/health reports correct tree count" ;; *) fail "wrong tree count in /health" ;; esac
+
+echo "enterprise security headers & options pre-flight"
+RESP_HEADERS=$(curl -s -I "localhost:8800/health")
+case "$RESP_HEADERS" in *'X-Content-Type-Options: nosniff'*|*'x-content-type-options: nosniff'*) ok "X-Content-Type-Options present" ;; *) fail "missing nosniff header" ;; esac
+case "$RESP_HEADERS" in *'X-Frame-Options: DENY'*|*'x-frame-options: DENY'*) ok "X-Frame-Options present" ;; *) fail "missing frame-options header" ;; esac
+case "$RESP_HEADERS" in *'Strict-Transport-Security'*|*'strict-transport-security'*) ok "HSTS header present" ;; *) fail "missing HSTS header" ;; esac
+
+OPT_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS "localhost:8800/mcp/alpha")
+is "OPTIONS pre-flight returns 204 No Content" "204" "$OPT_CODE"
+
+echo "authentication headers"
+AUTH_HEADER=$(curl -s -I "localhost:8800/mcp/alpha" | grep -i "WWW-Authenticate" || true)
+case "$AUTH_HEADER" in *'Bearer realm="glasir-control"'*) ok "WWW-Authenticate header RFC compliant" ;; *) fail "bad WWW-Authenticate header: $AUTH_HEADER" ;; esac
+
+echo "security hardening & traversal protection"
+is "traversal via %2e%2e is refused" 404 "$(code '%2e%2e%2falpha' tok-anna)"
+is "null byte in tree path is refused" 404 "$(code 'alpha%00evil' tok-anna)"
+
+echo "routing"
+is "anna reaches alpha"          200 "$(code alpha tok-anna)"
+is "bruno reaches beta"          200 "$(code beta  tok-bruno)"
+is "anna is refused beta"        404 "$(code beta  tok-anna)"
+is "bruno is refused alpha"      404 "$(code alpha tok-bruno)"
+# The heart of it: refused and absent must be one answer, or the service is an
+# oracle for repository names.
+is "an absent tree looks the same" 404 "$(code gamma tok-anna)"
+is "no credential is refused"    401 "$(code alpha '')"
+is "a wrong credential is refused" 401 "$(code alpha nonsense)"
+
+echo "no leak"
+A=$(body alpha tok-anna); B=$(body beta tok-bruno)
+case "$A" in *alpha_payroll*) ok "alpha's own symbols reach anna" ;; *) fail "anna got no alpha content" ;; esac
+case "$A" in *beta_*) fail "beta's symbols leaked into alpha's answer" ;; *) ok "no beta symbol in alpha's answer" ;; esac
+case "$B" in *beta_telemetry*) ok "beta's own symbols reach bruno" ;; *) fail "bruno got no beta content" ;; esac
+case "$B" in *alpha_*) fail "alpha's symbols leaked into beta's answer" ;; *) ok "no alpha symbol in beta's answer" ;; esac
+
+echo "revocation without a restart"
+grep -v '^grant.anna' "$WORK/rights.tsv" > "$WORK/r2" && mv "$WORK/r2" "$WORK/rights.tsv"
+sleep 1
+is "anna loses alpha at once"  404 "$(code alpha tok-anna)"
+is "bruno is untouched"        200 "$(code beta  tok-bruno)"
+
+echo "browser console"
+CONSOLE_HEADERS=$(curl -s -D - -o "$WORK/console.html" "localhost:8800/review")
+case "$CONSOLE_HEADERS" in *"text/html"*) ok "/review serves the console" ;; *) fail "/review is not HTML" ;; esac
+grep -q 'src="/console.js"' "$WORK/console.html" && ok "the console loads its script" || fail "console without script"
+is "/admin serves the same console" "$(md5sum < "$WORK/console.html")" "$(curl -s localhost:8800/admin | md5sum)"
+is "stylesheet is served" 200 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/console.css)"
+is "script is served" 200 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/console.js)"
+case "$CONSOLE_HEADERS" in *"style-src 'self'"*) ok "CSP allows only the console's own stylesheet" ;; *) fail "CSP lacks style-src 'self'" ;; esac
+case "$CONSOLE_HEADERS" in *"default-src 'none'"*) ok "CSP still denies everything else" ;; *) fail "CSP default-src loosened" ;; esac
+SESSION=$(curl -s localhost:8800/api/session -H "Authorization: Bearer tok-anna")
+is "session names the user" '{"admin":false,"scope":null,"user":"anna"}' "$SESSION"
+is "session knows an administrator" '{"admin":true,"scope":"global","user":"dora"}' "$(curl -s localhost:8800/api/session -H 'Authorization: Bearer tok-dora')"
+is "session without a credential is refused" 401 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/session)"
+is "proposal list is hidden from a non-administrator" 404 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/admin/policy/proposals -H 'Authorization: Bearer tok-anna')"
+is "sync status needs a credential" 401 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/sync/status)"
+is "sync status is hidden from a non-administrator" 404 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/sync/status -H 'Authorization: Bearer tok-anna')"
+is "an administrator reads the sync status" '{"github_webhook_configured":true,"gitlab_webhook_configured":true}' "$(curl -s localhost:8800/api/sync/status -H 'Authorization: Bearer tok-dora')"
+LIST=$(curl -s localhost:8800/api/admin/policy/proposals -H 'Authorization: Bearer tok-dora')
+case "$LIST" in *'"active_rights":'*'"proposals":[]'*) ok "an administrator lists proposals" ;; *) fail "proposal list: $LIST" ;; esac
+echo "tenant administrators"
+as() { curl -s "localhost:8800$2" -H "Authorization: Bearer tok-$1" "${@:3}"; }
+status() { curl -s -o /dev/null -w '%{http_code}' "localhost:8800$2" -H "Authorization: Bearer tok-$1" "${@:3}"; }
+propose() { status "$1" /api/admin/policy/proposals -X POST -d "{\"id\":\"$2\",\"rights\":\"$3\"}"; }
+approve() { status "$1" "/api/admin/policy/proposals/$2/approve" -X POST; }
+is "a tenant administrator's session names the tenant" '{"admin":true,"scope":["payroll"],"user":"erik"}' "$(as erik /api/session)"
+ER=$(as erik /api/admin/access-review)
+case "$ER" in *'"trees":["alpha"]'*) ok "the access review covers the tenant's trees" ;; *) fail "tenant access review: $ER" ;; esac
+case "$ER" in *beta*|*bruno*) fail "another tenant's tree leaked into the access review" ;; *) ok "no other tree in the tenant's access review" ;; esac
+case "$(as erik /api/admin/audit)" in *'"tree":"beta"'*) fail "beta's audit events reached a tenant administrator" ;; *'"tree":"alpha"'*) ok "the tenant's audit shows only its trees" ;; *) fail "tenant audit is empty" ;; esac
+is "sync status stays with global administrators" 404 "$(status erik /api/sync/status)"
+is "a tenant proposal reaching another tree is refused" 400 "$(propose erik t0 'grant\terik\tbeta\n')"
+is "a tenant proposal naming the admin role is refused" 400 "$(propose erik t0 'member\terik\tadmin\n')"
+is "a tenant proposal inside the tenant is accepted" 201 "$(propose erik t1 'grant\tanna\talpha\n')"
+is "a later proposal on the same base is accepted" 201 "$(propose erik t2 'grant\tclara\talpha\n')"
+is "a global proposal is accepted" 201 "$(status dora /api/admin/policy/proposals -X POST -d '{"id":"g1","rights":"tree\talpha\t127.0.0.1:1\tx\n"}')"
+case "$(as erik /api/admin/policy/proposals)" in *'"g1"'*) fail "a tenant administrator sees a global proposal" ;; *'"t1"'*) ok "a tenant administrator sees only the tenant's proposals" ;; *) fail "tenant proposal list" ;; esac
+case "$(as erik /api/admin/policy/proposals/t1)" in *"$BETA_BACKEND_TOKEN"*|*"$ALPHA_BACKEND_TOKEN"*) fail "a backend token reached a tenant administrator" ;; *'grant\tanna\talpha'*) ok "a tenant proposal shows only the tenant's lines" ;; *) fail "tenant proposal read" ;; esac
+is "a global proposal is hidden from a tenant administrator" 404 "$(status erik /api/admin/policy/proposals/g1)"
+is "a tenant administrator cannot approve a global proposal" 400 "$(approve erik g1)"
+is "the author cannot approve their own proposal" 400 "$(approve erik t1)"
+is "a non-administrator cannot approve" 404 "$(approve bruno t1)"
+is "another tenant administrator approves" 200 "$(approve fritz t1)"
+sleep 1
+is "the approved grant takes effect" 200 "$(code alpha tok-anna)"
+is "a proposal on an older policy is refused" 400 "$(approve fritz t2)"
+is "beta keeps its backend" 200 "$(code beta tok-bruno)"
+review() { curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8800/api/review/impact -H "Authorization: Bearer tok-anna" -d "{\"workspace\":\"none\",\"rev\":\"$1\"}"; }
+is "a revision that is an option is refused" 400 "$(review '--output')"
+is "an ancestor revision is accepted" 404 "$(review 'HEAD~1')"
+is "the console answers a sign-on return" 200 "$(curl -s -o /dev/null -w '%{http_code}' 'localhost:8800/review?code=SIGNONCODE&state=s')"
+is "no sign-on without its settings" 204 "$(curl -s -o /dev/null -w '%{http_code}' localhost:8800/api/sso)"
+
+echo "code-host sync via github webhook"
+# clara has no access to alpha initially
+is "clara has no access to alpha initially" 404 "$(code alpha tok-clara)"
+
+# Send GitHub Webhook: member added
+GH_PAYLOAD='{"action":"added","member":{"login":"clara"},"repository":{"full_name":"acme/alpha"}}'
+GH_SIG=$(python3 -c "import hmac, hashlib; print('sha256=' + hmac.new(b'$GH_SECRET', b'''$GH_PAYLOAD''', hashlib.sha256).hexdigest())")
+
+GH_RESP=$(curl -s -X POST "localhost:8800/api/sync/webhook/github" \
+  -H "X-GitHub-Event: member" \
+  -H "X-Hub-Signature-256: $GH_SIG" \
+  -H "Content-Type: application/json" \
+  -d "$GH_PAYLOAD")
+case "$GH_RESP" in *'"applied":true'*|*'"status":"ok"'*) ok "github webhook processed successfully" ;; *) fail "github webhook failed: $GH_RESP" ;; esac
+
+sleep 1
+is "clara gained alpha access via webhook" 200 "$(code alpha tok-clara)"
+
+# Send GitHub Webhook: member removed
+GH_REM_PAYLOAD='{"action":"removed","member":{"login":"clara"},"repository":{"full_name":"acme/alpha"}}'
+GH_REM_SIG=$(python3 -c "import hmac, hashlib; print('sha256=' + hmac.new(b'$GH_SECRET', b'''$GH_REM_PAYLOAD''', hashlib.sha256).hexdigest())")
+
+curl -s -X POST "localhost:8800/api/sync/webhook/github" \
+  -H "X-GitHub-Event: member" \
+  -H "X-Hub-Signature-256: $GH_REM_SIG" \
+  -H "Content-Type: application/json" \
+  -d "$GH_REM_PAYLOAD" >/dev/null
+
+sleep 1
+is "clara lost alpha access via webhook" 404 "$(code alpha tok-clara)"
+
+echo "code-host sync via gitlab webhook"
+GL_PAYLOAD='{"event_name":"user_add_to_group","user_username":"clara","group_path":"acme"}'
+GL_RESP=$(curl -s -X POST "localhost:8800/api/sync/webhook/gitlab" \
+  -H "X-Gitlab-Event: member" \
+  -H "X-Gitlab-Token: $GL_SECRET" \
+  -H "Content-Type: application/json" \
+  -d "$GL_PAYLOAD")
+case "$GL_RESP" in *'"applied":true'*|*'"status":"ok"'*) ok "gitlab webhook processed successfully" ;; *) fail "gitlab webhook failed: $GL_RESP" ;; esac
+
+sleep 1
+is "clara gained beta access via gitlab webhook" 200 "$(code beta tok-clara)"
+
+echo "cli permission mutation"
+"$CONTROL" --sync-grant "clara:alpha" --rights "$WORK/rights.tsv" >/dev/null
+sleep 1
+is "clara reaches alpha after cli sync-grant" 200 "$(code alpha tok-clara)"
+
+"$CONTROL" --sync-revoke "clara:alpha" --rights "$WORK/rights.tsv" >/dev/null
+sleep 1
+is "clara refused alpha after cli sync-revoke" 404 "$(code alpha tok-clara)"
+
+echo "audit logging"
+sleep 1
+if [ -f "$AUDIT_LOG" ]; then
+  ok "audit log file created"
+  AUDIT_LINES=$(wc -l < "$AUDIT_LOG")
+  if [ "$AUDIT_LINES" -gt 5 ]; then
+    ok "audit log recorded requests ($AUDIT_LINES entries)"
+  else
+    fail "audit log too few entries: $AUDIT_LINES"
+  fi
+  grep -q '"who":"bruno"' "$AUDIT_LOG" && ok "audit log captured user identity" || fail "no bruno in audit log"
+  grep -q '"tree":"beta"' "$AUDIT_LOG" && ok "audit log captured tree" || fail "no beta tree in audit log"
+  grep -q '"path":"/health"' "$AUDIT_LOG" && ok "audit log captured health probes" || fail "no /health in audit log"
+  grep -q 'SIGNONCODE' "$AUDIT_LOG" && fail "a sign-on code reached the audit log" || ok "no sign-on code in the audit log"
+else
+  fail "audit log file was not created"
+fi
+
+echo "oidc sign-in end to end"
+# A real RS256 signature through the running binary. jsonwebtoken 10 once
+# compiled green and panicked on every OIDC sign-in; only a request finds that.
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORK/idp.pem" 2>/dev/null
+N=$(openssl rsa -in "$WORK/idp.pem" -noout -modulus | cut -d= -f2 |
+  python3 -c "import sys,base64; print(base64.urlsafe_b64encode(bytes.fromhex(sys.stdin.read().strip())).rstrip(b'=').decode())")
+printf '{"keys":[{"kty":"RSA","kid":"ci","n":"%s","e":"AQAB"}]}' "$N" > "$WORK/jwks.json"
+jwt() { # jwt <sub> <exp>
+  local input
+  input="$(printf '{"alg":"RS256","kid":"ci","typ":"JWT"}' | b64url).$(printf '{"iss":"https://idp.test","aud":"glasir-control","sub":"%s","exp":%s}' "$1" "$2" | b64url)"
+  printf '%s.%s' "$input" "$(printf %s "$input" | openssl dgst -sha256 -sign "$WORK/idp.pem" -binary | b64url)"
+}
+"$CONTROL" --listen 127.0.0.1:8801 \
+  --rights "$WORK/rights.tsv" \
+  --tokens "$WORK/tokens" \
+  --oidc-issuer https://idp.test \
+  --oidc-audience glasir-control \
+  --audit "$WORK/oidc-audit.jsonl" \
+  --oidc-jwks "$WORK/jwks.json" \
+  --oidc-client-id console \
+  --oidc-authorization-endpoint https://idp.test/authorize \
+  --oidc-token-endpoint https://login.idp.test/token >/dev/null 2>&1 &
+PIDS="$PIDS $!"
+sleep 2
+oidc() { curl -s -o /dev/null -w '%{http_code}' -X POST "localhost:8801/mcp/$1" -H "Authorization: Bearer $2" -d "$Q"; }
+GOOD=$(jwt bruno 4102444800)
+is "a signed token reaches its tree" 200 "$(oidc beta "$GOOD")"
+is "a signed token is refused another tree" 404 "$(oidc alpha "$GOOD")"
+is "an expired token is refused" 401 "$(oidc beta "$(jwt bruno 1000000000)")"
+is "a changed signature is refused" 401 "$(oidc beta "${GOOD%?}$([ "${GOOD: -1}" = A ] && echo B || echo A)")"
+is "a static credential does not bypass oidc" 401 "$(oidc beta tok-bruno)"
+case "$(curl -s localhost:8801/api/sso)" in *'"client_id":"console"'*'"token_endpoint":"https://login.idp.test/token"'*) ok "the console learns its sign-on settings" ;; *) fail "no sign-on settings" ;; esac
+case "$(curl -s -D - -o /dev/null localhost:8801/review)" in *"connect-src 'self' https://login.idp.test;"*) ok "CSP admits the token endpoint and nothing else" ;; *) fail "CSP lacks the token endpoint" ;; esac
+
+echo "cross-repository routes"
+# A client in one repository, its server in another: the workspace review
+# names the client's request as a caller of the changed handler.
+repo() { git -C "$1" -c user.email=c@c -c user.name=c "${@:2}" >/dev/null; }
+mkdir -p "$WORK/shop/src" "$WORK/web/src"
+cat > "$WORK/shop/src/OrderApi.java" <<'JAVA'
+@RequestMapping("/api/orders")
+public class OrderApi {
+    @GetMapping("/{id}")
+    public Order show(long id) { return null; }
+
+    @DeleteMapping("/{id}")
+    public void cancel(long id) { }
+}
+JAVA
+cat > "$WORK/web/src/orders.ts" <<'TS'
+export class Orders {
+  url = '/api/orders';
+  one(id: number) {
+    return this.http.get<{ order: Order }>(this.url + '/' + id);
+  }
+  drop(id: number) {
+    return this.http.delete<void>(`${this.url}/${id}`);
+  }
+}
+TS
+for r in shop web; do git init -q "$WORK/$r"; repo "$WORK/$r" add -A; repo "$WORK/$r" commit -qm one; done
+sed -i 's|public Order show(long id) { return null; }|public Order show(long id) { return lookup(id); }|' "$WORK/shop/src/OrderApi.java"
+repo "$WORK/shop" commit -qam two
+echo >> "$WORK/web/src/orders.ts"; repo "$WORK/web" commit -qam two
+"$GLASIR" analyse "$WORK/shop" >/dev/null 2>&1
+"$GLASIR" analyse "$WORK/web" >/dev/null 2>&1
+SHOP_TOKEN=$(cd "$WORK/shop" && "$GLASIR" token add control 2>/dev/null)
+WEB_TOKEN=$(cd "$WORK/web" && "$GLASIR" token add control 2>/dev/null)
+"$GLASIR" serve "$WORK/shop" --http 7003 --behind-control-plane >/dev/null 2>&1 &
+PIDS="$PIDS $!"
+"$GLASIR" serve "$WORK/web" --http 7004 --behind-control-plane >/dev/null 2>&1 &
+PIDS="$PIDS $!"
+printf 'tree\tshop\t127.0.0.1:7003\t%s\ntree\tweb\t127.0.0.1:7004\t%s\ngrant\tbruno\tshop\ngrant\tbruno\tweb\nworkspace\tstore\tshop,web\n' \
+  "$SHOP_TOKEN" "$WEB_TOKEN" > "$WORK/xrights.tsv"
+"$CONTROL" --listen 127.0.0.1:8802 --rights "$WORK/xrights.tsv" --tokens "$WORK/tokens" \
+  --audit "$WORK/xaudit.jsonl" >/dev/null 2>&1 &
+PIDS="$PIDS $!"
+sleep 3
+XREVIEW=$(curl -s -X POST localhost:8802/api/review/impact -H "Authorization: Bearer tok-bruno" \
+  -d '{"workspace":"store","rev":"HEAD~1","depth":3}')
+CALLERS=$(printf %s "$XREVIEW" | python3 -c 'import sys,json; r=json.load(sys.stdin); print(" ".join(f"{e["handler"]}<-{c["tree"]}:{c["sender"]}" for e in r.get("cross_repo_callers",[]) for c in e["callers"]))')
+is "the changed handler is called from the other repository" \
+  "src/OrderApi.java#show<-web:src/orders.ts#one" "$CALLERS"
+case "$XREVIEW" in *'"cross_repo_routes":2'*) ok "both requests reach the other repository" ;; *) fail "cross-repo routes: $(printf %s "$XREVIEW" | head -c 300)" ;; esac
+
+echo
+if [ "$FAILED" = 0 ]; then echo "all checks passed"; else echo "FAILURES"; fi
+exit $FAILED

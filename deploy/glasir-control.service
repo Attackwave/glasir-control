@@ -1,0 +1,28 @@
+[Unit]
+Description=Glasir enterprise control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=glasir
+Group=glasir
+WorkingDirectory=/var/lib/glasir-control
+EnvironmentFile=/etc/glasir-control/environment
+ExecStart=/usr/local/bin/glasir-control \
+  --listen 127.0.0.1:8800 \
+  --rights /etc/glasir-control/rights.tsv \
+  --tokens /run/secrets/glasir-control.tokens \
+  --audit /var/log/glasir-control/audit.jsonl
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/glasir-control /var/log/glasir-control /run/secrets
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

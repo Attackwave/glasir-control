@@ -1,0 +1,99 @@
+# A real, isolated Kubernetes smoke test for the control-plane pod. This uses
+# only deliberately non-production credentials and never contacts a Core.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: glasir-smoke
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: policy
+  namespace: glasir-smoke
+type: Opaque
+stringData:
+  rights.tsv: |
+    tree	alpha	core-alpha.glasir-smoke.svc.cluster.local:7001	smoke-core-token
+    grant	tester	alpha
+  users.tokens: |
+    e21bcd640a295102c3a9c50d3fca3c437db27af04b4bfe8c7957b16a55f477f0	tester	0
+  audit.key: smoke-audit-key-012345678901234567890123456789
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy
+  namespace: glasir-smoke
+data:
+  default.conf: |
+    server {
+      listen 8080;
+      location / {
+        proxy_pass http://127.0.0.1:8800;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control
+  namespace: glasir-smoke
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: control } }
+  template:
+    metadata: { labels: { app: control } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: control
+          image: glasir-control:mtls-check
+          imagePullPolicy: Never
+          args: [--listen, 127.0.0.1:8800, --rights, /run/glasir/rights.tsv, --tokens, /run/glasir/users.tokens, --audit, /var/log/glasir/audit.jsonl, --audit-key-file, /run/glasir/audit.key, --backend-tls-ca, /run/tls/ca.crt, --backend-tls-cert, /run/tls/control.crt, --backend-tls-key, /run/tls/control.key]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          volumeMounts:
+            - { name: policy, mountPath: /run/glasir, readOnly: true }
+            - { name: audit, mountPath: /var/log/glasir }
+            - { name: tmp, mountPath: /tmp }
+            - { name: mtls, mountPath: /run/tls, readOnly: true }
+        - name: proxy
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports: [{ containerPort: 8080, name: http }]
+          readinessProbe: { httpGet: { path: /ready, port: http } }
+          livenessProbe: { httpGet: { path: /health, port: http } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 101
+            runAsGroup: 101
+          volumeMounts:
+            - { name: proxy-config, mountPath: /etc/nginx/conf.d, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: policy, secret: { secretName: policy } }
+        - { name: audit, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+        - { name: mtls, secret: { secretName: mtls } }
+        - { name: proxy-config, configMap: { name: proxy } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control
+  namespace: glasir-smoke
+spec:
+  selector: { app: control }
+  ports: [{ name: http, port: 8080, targetPort: http }]
