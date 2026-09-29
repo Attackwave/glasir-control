@@ -7,6 +7,9 @@ KEY, PORT, SUB = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 BADSTATE = len(sys.argv) > 4
 codes = {}
 b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b'=').decode()
+# A header value taken from the request must not carry a line break, or it
+# could end the header and start another.
+header_safe = lambda v: "\r" not in v and "\n" not in v
 def jwt(sub):
     h = b64(json.dumps({"alg": "RS256", "kid": "k", "typ": "JWT"}).encode())
     p = b64(json.dumps({"iss": f"http://localhost:{PORT}", "aud": "glasir-control", "sub": sub, "exp": int(time.time()) + 600}).encode())
@@ -15,7 +18,9 @@ def jwt(sub):
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): print(self.command, self.path.split('?')[0], *a[1:], file=sys.stderr)
     def cors(self):
-        self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin", "*"))
+        # Any origin: the console redeems the code without credentials, so a
+        # wildcard is enough and nothing from the request reaches the header.
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
     def do_OPTIONS(self):
         self.send_response(204); self.cors(); self.end_headers()
@@ -28,6 +33,8 @@ class H(BaseHTTPRequestHandler):
             code = secrets.token_urlsafe(16)
             codes[code] = (q["code_challenge"], q["redirect_uri"])
             loc = q["redirect_uri"] + "?" + urllib.parse.urlencode({"code": code, "state": "forged" if BADSTATE else q["state"]})
+        if not header_safe(loc):
+            self.send_response(400); self.end_headers(); return
         self.send_response(302); self.send_header("Location", loc); self.end_headers()
     def do_POST(self):
         f = dict(urllib.parse.parse_qsl(self.rfile.read(int(self.headers["Content-Length"])).decode()))
