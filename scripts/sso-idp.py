@@ -18,8 +18,9 @@ def jwt(sub):
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): print(self.command, self.path.split('?')[0], *a[1:], file=sys.stderr)
     def cors(self):
-        origin = self.headers.get("Origin", "*")
-        self.send_header("Access-Control-Allow-Origin", origin if header_safe(origin) else "null")
+        # Any origin: the console redeems the code without credentials, so a
+        # wildcard is enough and nothing from the request reaches the header.
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
     def do_OPTIONS(self):
         self.send_response(204); self.cors(); self.end_headers()
