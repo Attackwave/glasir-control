@@ -588,12 +588,24 @@ fn run_audit_ingest(
         // append workers so connection floods cannot turn into unbounded OS
         // threads before the mTLS verifier gets a chance to reject them.
         let active = active.clone();
-        if active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < MAX_CONNECTIONS).then_some(count + 1)
-            })
-            .is_err()
-        {
+        // A compare-and-swap loop rather than `fetch_update`, which newer
+        // toolchains deprecate in favour of `try_update`, absent from the MSRV.
+        let mut count = active.load(Ordering::Acquire);
+        let admitted = loop {
+            if count >= MAX_CONNECTIONS {
+                break false;
+            }
+            match active.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break true,
+                Err(now) => count = now,
+            }
+        };
+        if !admitted {
             continue;
         }
         std::thread::spawn(move || {
