@@ -1,7 +1,7 @@
 # Demo only: Glasir Core and Control in one container, with fixed demo
 # credentials. Never expose it beyond localhost.
-ARG GLASIR_VERSION=v0.5.0
-ARG CONTROL_VERSION=v0.5.0
+ARG GLASIR_VERSION=v0.7.0
+ARG CONTROL_VERSION=v0.5.1
 FROM ghcr.io/attackwave/glasir:${GLASIR_VERSION} AS core
 FROM ghcr.io/attackwave/glasir-control:${CONTROL_VERSION} AS control
 FROM debian:bookworm-slim
