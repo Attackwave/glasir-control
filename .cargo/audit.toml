@@ -4,4 +4,10 @@
 # `rust_crypto` backend, and Control only verifies identity-provider tokens
 # with their *public* keys — it never decrypts or signs with RSA, so there is
 # no secret whose timing could leak. Revisit if Control ever signs tokens.
-ignore = ["RUSTSEC-2023-0071"]
+# RUSTSEC-2026-0387 (crypto-bigint 0.5, timing variability in operations
+# meant to be constant-time): `p256`/`p384` come with the same backend, and
+# Control never runs them — `auth::identify` accepts RS256 only and rejects
+# every other algorithm before a signature is checked. No release of
+# jsonwebtoken (11.1.0 included) requires the fixed `p256` 0.14 yet; revisit
+# when one does, or if Control ever accepts an EC algorithm.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0387"]
