@@ -3,6 +3,8 @@
 # Control, Control applies its policy and replaces that credential with the
 # tree-specific backend token, and Core accepts it only over mutual TLS.
 set -euo pipefail
+# Core refuses a token file that others may read; every secret here is private.
+umask 077
 
 control_bin="${GLASIR_CONTROL_BIN:-target/release/glasir-control}"
 core_bin="${GLASIR_CORE_BIN:-}"
