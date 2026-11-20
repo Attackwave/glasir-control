@@ -1,6 +1,6 @@
 # Demo only: Glasir Core and Control in one container, with fixed demo
 # credentials. Never expose it beyond localhost.
-ARG GLASIR_VERSION=v0.8.1
+ARG GLASIR_VERSION=v0.13.2
 ARG CONTROL_VERSION=v0.5.2
 FROM ghcr.io/attackwave/glasir:${GLASIR_VERSION} AS core
 FROM ghcr.io/attackwave/glasir-control:${CONTROL_VERSION} AS control
