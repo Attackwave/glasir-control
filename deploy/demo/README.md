@@ -47,11 +47,11 @@ policy names them.
 ## Versions
 
 The image copies the binaries out of the published release images (Glasir
-0.8.1 and Control 0.5.2 by default; the tenant needs at least Control 0.4.0). Choose other
+0.13.2 and Control 0.5.2 by default; the tenant needs at least Control 0.4.0). Choose other
 releases with build arguments:
 
 ```sh
-docker compose build --build-arg GLASIR_VERSION=v0.8.1 --build-arg CONTROL_VERSION=v0.5.2
+docker compose build --build-arg GLASIR_VERSION=v0.13.2 --build-arg CONTROL_VERSION=v0.5.2
 ```
 
 Control listens on loopback only, as in production. Inside the container,
